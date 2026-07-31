@@ -221,9 +221,11 @@ def default_include_dirs(source_root: Path, source_path: Path) -> list[Path]:
 
 
 def extra_link_sources(source_root: Path, source_path: Path) -> list[Path]:
-    polybench_runtime = source_root / "utilities" / "polybench.c"
-    if polybench_runtime.exists() and source_path.resolve() != polybench_runtime.resolve():
-        return [polybench_runtime]
+    search_roots = (source_root.resolve(), *source_path.resolve().parents)
+    for root in dict.fromkeys(search_roots):
+        polybench_runtime = root / "utilities" / "polybench.c"
+        if polybench_runtime.exists() and source_path.resolve() != polybench_runtime.resolve():
+            return [polybench_runtime]
     return []
 
 
