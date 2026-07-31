@@ -15,8 +15,6 @@ __pycache__/
 /build/
 /results/
 
-/datasets/cuda-samples-13.3/
-/datasets/rodinia_3.1/
 /article/
 
 *.pdf
