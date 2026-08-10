@@ -1,0 +1,529 @@
+{
+  "schema_version": 1,
+  "benchmarks": [
+    {
+      "id": "b+tree",
+      "workdir": "b+tree",
+      "executable": "b+tree.out",
+      "build": [["make", "b+tree.out"]],
+      "clean": [["make", "clean"]],
+      "sources": ["main.c", "kernel/kernel_cpu.c", "kernel/kernel_cpu_2.c", "util/timer/timer.c", "util/num/num.c"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {
+          "id": "mil-smoke",
+          "profile": "smoke",
+          "args": ["core", "2", "file", "../../data/b+tree/mil.txt", "command", "../../data/b+tree/command.txt"],
+          "threads": 2,
+          "parameters": {"input_file": "mil.txt", "command_file": "command.txt", "threads": 2},
+          "required_files": ["../../data/b+tree/mil.txt", "../../data/b+tree/command.txt"]
+        },
+        {
+          "id": "mil-official",
+          "profile": "official",
+          "args": ["core", "4", "file", "../../data/b+tree/mil.txt", "command", "../../data/b+tree/command.txt"],
+          "threads": 4,
+          "parameters": {"input_file": "mil.txt", "command_file": "command.txt", "threads": 4},
+          "required_files": ["../../data/b+tree/mil.txt", "../../data/b+tree/command.txt"]
+        }
+      ]
+    },
+    {
+      "id": "backprop",
+      "workdir": "backprop",
+      "executable": "backprop",
+      "build": [["make", "backprop"]],
+      "clean": [["make", "clean"]],
+      "sources": ["backprop.c", "backprop_kernel.c", "facetrain.c", "imagenet.c"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {
+          "id": "layer-1024",
+          "profile": "smoke",
+          "args": ["1024"],
+          "threads": 8,
+          "parameters": {"input_layer_size": 1024, "threads": 8, "thread_control": "hardcoded"}
+        },
+        {
+          "id": "layer-65536",
+          "profile": "official",
+          "args": ["65536"],
+          "threads": 8,
+          "parameters": {"input_layer_size": 65536, "threads": 8, "thread_control": "hardcoded"}
+        }
+      ]
+    },
+    {
+      "id": "bfs",
+      "workdir": "bfs",
+      "executable": "bfs",
+      "build": [["make", "bfs"]],
+      "clean": [["make", "clean"]],
+      "sources": ["bfs.cpp"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {
+          "id": "graph-4096",
+          "profile": "smoke",
+          "args": ["2", "../../data/bfs/graph4096.txt"],
+          "threads": 2,
+          "parameters": {"input_file": "graph4096.txt", "threads": 2},
+          "required_files": ["../../data/bfs/graph4096.txt"]
+        },
+        {
+          "id": "graph-1mw",
+          "profile": "official",
+          "args": ["4", "../../data/bfs/graph1MW_6.txt"],
+          "threads": 4,
+          "parameters": {"input_file": "graph1MW_6.txt", "threads": 4},
+          "required_files": ["../../data/bfs/graph1MW_6.txt"]
+        }
+      ]
+    },
+    {
+      "id": "cfd",
+      "workdir": "cfd",
+      "executable": "euler3d_cpu",
+      "build": [["make", "euler3d_cpu", "OMP_NUM_THREADS=4"]],
+      "clean": [["make", "clean"]],
+      "sources": ["euler3d_cpu.cpp"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp", "-Dblock_length=4"],
+      "inputs": [
+        {
+          "id": "fvcorr-097k",
+          "profile": "smoke",
+          "args": ["../../data/cfd/fvcorr.domn.097K"],
+          "threads": 4,
+          "parameters": {"input_file": "fvcorr.domn.097K", "threads": 4},
+          "required_files": ["../../data/cfd/fvcorr.domn.097K"]
+        },
+        {
+          "id": "fvcorr-193k",
+          "profile": "official",
+          "args": ["../../data/cfd/fvcorr.domn.193K"],
+          "threads": 4,
+          "parameters": {"input_file": "fvcorr.domn.193K", "threads": 4},
+          "required_files": ["../../data/cfd/fvcorr.domn.193K"]
+        }
+      ]
+    },
+    {
+      "id": "heartwall",
+      "workdir": "heartwall",
+      "executable": "heartwall",
+      "build": [["make", "heartwall"]],
+      "clean": [["make", "clean"]],
+      "sources": ["main.c", "AVI/avilib.c", "AVI/avimod.c"],
+      "include_dirs": [".", "AVI"],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {
+          "id": "video-2-frames",
+          "profile": "smoke",
+          "args": ["../../data/heartwall/test.avi", "2", "2"],
+          "threads": 2,
+          "parameters": {"input_file": "test.avi", "frames": 2, "threads": 2},
+          "required_files": ["../../data/heartwall/test.avi"]
+        },
+        {
+          "id": "video-20-frames",
+          "profile": "official",
+          "args": ["../../data/heartwall/test.avi", "20", "4"],
+          "threads": 4,
+          "parameters": {"input_file": "test.avi", "frames": 20, "threads": 4},
+          "required_files": ["../../data/heartwall/test.avi"]
+        }
+      ]
+    },
+    {
+      "id": "hotspot",
+      "workdir": "hotspot",
+      "executable": "hotspot",
+      "build": [["make", "hotspot"]],
+      "clean": [["make", "clean"]],
+      "sources": ["hotspot_openmp.cpp"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {
+          "id": "grid-64",
+          "profile": "smoke",
+          "args": ["64", "64", "2", "2", "../../data/hotspot/temp_64", "../../data/hotspot/power_64", "{null_device}"],
+          "threads": 2,
+          "parameters": {"rows": 64, "columns": 64, "iterations": 2, "threads": 2},
+          "required_files": ["../../data/hotspot/temp_64", "../../data/hotspot/power_64"]
+        },
+        {
+          "id": "grid-1024",
+          "profile": "official",
+          "args": ["1024", "1024", "2", "4", "../../data/hotspot/temp_1024", "../../data/hotspot/power_1024", "{null_device}"],
+          "threads": 4,
+          "parameters": {"rows": 1024, "columns": 1024, "iterations": 2, "threads": 4},
+          "required_files": ["../../data/hotspot/temp_1024", "../../data/hotspot/power_1024"]
+        }
+      ]
+    },
+    {
+      "id": "hotspot3D",
+      "workdir": "hotspot3D",
+      "executable": "3D",
+      "build": [["make", "3D"]],
+      "clean": [["make", "clean"]],
+      "sources": ["3D.c"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {
+          "id": "grid-64x8",
+          "profile": "smoke",
+          "args": ["64", "8", "10", "../../data/hotspot3D/power_64x8", "../../data/hotspot3D/temp_64x8", "{null_device}"],
+          "threads": 2,
+          "parameters": {"grid_size": 64, "layers": 8, "iterations": 10, "threads": 2},
+          "required_files": ["../../data/hotspot3D/power_64x8", "../../data/hotspot3D/temp_64x8"]
+        },
+        {
+          "id": "grid-512x8",
+          "profile": "official",
+          "args": ["512", "8", "100", "../../data/hotspot3D/power_512x8", "../../data/hotspot3D/temp_512x8", "{null_device}"],
+          "threads": 4,
+          "parameters": {"grid_size": 512, "layers": 8, "iterations": 100, "threads": 4},
+          "required_files": ["../../data/hotspot3D/power_512x8", "../../data/hotspot3D/temp_512x8"]
+        }
+      ]
+    },
+    {
+      "id": "kmeans",
+      "workdir": "kmeans",
+      "executable": "kmeans_openmp/kmeans",
+      "build": [["make", "OPENMP/kmeans"]],
+      "clean": [["make", "clean"]],
+      "sources": ["kmeans_openmp/cluster.c", "kmeans_openmp/getopt.c", "kmeans_openmp/kmeans.c", "kmeans_openmp/kmeans_clustering.c"],
+      "include_dirs": ["kmeans_openmp"],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {
+          "id": "points-100",
+          "profile": "smoke",
+          "args": ["-n", "2", "-i", "../../data/kmeans/100"],
+          "threads": 2,
+          "parameters": {"input_file": "100", "threads": 2},
+          "required_files": ["../../data/kmeans/100"]
+        },
+        {
+          "id": "kdd-cup",
+          "profile": "official",
+          "args": ["-n", "4", "-i", "../../data/kmeans/kdd_cup"],
+          "threads": 4,
+          "parameters": {"input_file": "kdd_cup", "threads": 4},
+          "required_files": ["../../data/kmeans/kdd_cup"]
+        }
+      ]
+    },
+    {
+      "id": "lavaMD",
+      "workdir": "lavaMD",
+      "executable": "lavaMD",
+      "build": [["make", "a.out"]],
+      "clean": [["make", "clean"]],
+      "sources": ["main.c", "kernel/kernel_cpu.c", "util/num/num.c", "util/timer/timer.c"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {
+          "id": "boxes-4",
+          "profile": "smoke",
+          "args": ["-cores", "2", "-boxes1d", "4"],
+          "threads": 2,
+          "parameters": {"boxes1d": 4, "threads": 2}
+        },
+        {
+          "id": "boxes-10",
+          "profile": "official",
+          "args": ["-cores", "4", "-boxes1d", "10"],
+          "threads": 4,
+          "parameters": {"boxes1d": 10, "threads": 4}
+        }
+      ]
+    },
+    {
+      "id": "leukocyte",
+      "workdir": "leukocyte",
+      "executable": "OpenMP/leukocyte",
+      "build": [["make", "OpenMP/leukocyte"]],
+      "clean": [["make", "clean"]],
+      "sources": ["OpenMP/detect_main.c", "OpenMP/avilib.c", "OpenMP/find_ellipse.c", "OpenMP/track_ellipse.c", "OpenMP/misc_math.c"],
+      "include_dirs": ["OpenMP", "meschach_lib"],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {
+          "id": "video-1-frame",
+          "profile": "smoke",
+          "args": ["1", "2", "../../data/leukocyte/testfile.avi"],
+          "threads": 2,
+          "parameters": {"frames": 1, "threads": 2, "input_file": "testfile.avi"},
+          "required_files": ["../../data/leukocyte/testfile.avi"]
+        },
+        {
+          "id": "video-5-frames",
+          "profile": "official",
+          "args": ["5", "4", "../../data/leukocyte/testfile.avi"],
+          "threads": 4,
+          "parameters": {"frames": 5, "threads": 4, "input_file": "testfile.avi"},
+          "required_files": ["../../data/leukocyte/testfile.avi"]
+        }
+      ]
+    },
+    {
+      "id": "lud",
+      "workdir": "lud/omp",
+      "executable": "lud_omp",
+      "build": [["make"]],
+      "clean": [["make", "clean"]],
+      "sources": ["lud.c", "lud_omp.c", "../common/common.c"],
+      "include_dirs": [".", "../common"],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {
+          "id": "matrix-256",
+          "profile": "smoke",
+          "args": ["-s", "256"],
+          "threads": 2,
+          "parameters": {"matrix_dimension": 256, "threads": 2}
+        },
+        {
+          "id": "matrix-8000",
+          "profile": "official",
+          "args": ["-s", "8000"],
+          "threads": 4,
+          "parameters": {"matrix_dimension": 8000, "threads": 4}
+        }
+      ]
+    },
+    {
+      "id": "mummergpu",
+      "workdir": "mummergpu",
+      "executable": "bin/mummergpu",
+      "build": [],
+      "clean": [],
+      "sources": [],
+      "inputs": [],
+      "enabled": false,
+      "disabled_reason": "The build still requires the CUDA toolchain; it is not a pure OpenMP benchmark."
+    },
+    {
+      "id": "myocyte",
+      "workdir": "myocyte",
+      "executable": "myocyte.out",
+      "build": [["make", "myocyte.out"]],
+      "clean": [["make", "clean"]],
+      "sources": ["main.c"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp"],
+      "required_files": ["../../data/myocyte/y.txt", "../../data/myocyte/params.txt"],
+      "inputs": [
+        {
+          "id": "workload-10",
+          "profile": "smoke",
+          "args": ["10", "1", "0", "2"],
+          "threads": 2,
+          "parameters": {"workload": 10, "xmax": 1, "mode": 0, "threads": 2}
+        },
+        {
+          "id": "workload-100",
+          "profile": "official",
+          "args": ["100", "1", "0", "4"],
+          "threads": 4,
+          "parameters": {"workload": 100, "xmax": 1, "mode": 0, "threads": 4}
+        }
+      ]
+    },
+    {
+      "id": "nn",
+      "workdir": "nn",
+      "executable": "nn",
+      "build": [["make", "nn"]],
+      "clean": [["make", "clean"]],
+      "sources": ["nn_openmp.c"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp"],
+      "required_files": ["filelist_4", "../../data/nn/cane4_0.db", "../../data/nn/cane4_1.db", "../../data/nn/cane4_2.db", "../../data/nn/cane4_3.db"],
+      "inputs": [
+        {
+          "id": "neighbors-1",
+          "profile": "smoke",
+          "args": ["filelist_4", "1", "30", "90"],
+          "threads": 2,
+          "parameters": {"file_count": 4, "neighbors": 1, "latitude": 30, "longitude": 90, "threads": 2}
+        },
+        {
+          "id": "neighbors-5",
+          "profile": "official",
+          "args": ["filelist_4", "5", "30", "90"],
+          "threads": 4,
+          "parameters": {"file_count": 4, "neighbors": 5, "latitude": 30, "longitude": 90, "threads": 4}
+        }
+      ]
+    },
+    {
+      "id": "nw",
+      "workdir": "nw",
+      "executable": "needle",
+      "build": [["make", "needle"]],
+      "clean": [["make", "clean"]],
+      "sources": ["needle.cpp"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {
+          "id": "dimension-256",
+          "profile": "smoke",
+          "args": ["256", "10", "2"],
+          "threads": 2,
+          "parameters": {"dimension": 256, "penalty": 10, "threads": 2}
+        },
+        {
+          "id": "dimension-2048",
+          "profile": "official",
+          "args": ["2048", "10", "4"],
+          "threads": 4,
+          "parameters": {"dimension": 2048, "penalty": 10, "threads": 4}
+        }
+      ]
+    },
+    {
+      "id": "particlefilter",
+      "workdir": "particlefilter",
+      "executable": "particle_filter",
+      "build": [["make", "openmp"]],
+      "clean": [["make", "clean"]],
+      "sources": ["ex_particle_OPENMP_seq.c"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {
+          "id": "video-64x64",
+          "profile": "smoke",
+          "args": ["-x", "64", "-y", "64", "-z", "5", "-np", "1000"],
+          "threads": 2,
+          "parameters": {"width": 64, "height": 64, "frames": 5, "particles": 1000, "threads": 2}
+        },
+        {
+          "id": "video-128x128",
+          "profile": "official",
+          "args": ["-x", "128", "-y", "128", "-z", "10", "-np", "10000"],
+          "threads": 4,
+          "parameters": {"width": 128, "height": 128, "frames": 10, "particles": 10000, "threads": 4}
+        }
+      ]
+    },
+    {
+      "id": "pathfinder",
+      "workdir": "pathfinder",
+      "executable": "pathfinder",
+      "build": [["make", "release"]],
+      "clean": [["make", "clean"]],
+      "sources": ["pathfinder.cpp"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {
+          "id": "grid-1000x100",
+          "profile": "smoke",
+          "args": ["1000", "100"],
+          "threads": 2,
+          "parameters": {"columns": 1000, "rows": 100, "threads": 2}
+        },
+        {
+          "id": "grid-100000x100",
+          "profile": "official",
+          "args": ["100000", "100"],
+          "threads": 4,
+          "parameters": {"columns": 100000, "rows": 100, "threads": 4}
+        }
+      ]
+    },
+    {
+      "id": "srad_v1",
+      "workdir": "srad/srad_v1",
+      "executable": "srad",
+      "build": [["make"]],
+      "clean": [["make", "clean"]],
+      "sources": ["main.c"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp"],
+      "required_files": ["../../../data/srad/image.pgm"],
+      "inputs": [
+        {
+          "id": "image-128",
+          "profile": "smoke",
+          "args": ["10", "0.5", "128", "128", "2"],
+          "threads": 2,
+          "parameters": {"iterations": 10, "lambda": 0.5, "rows": 128, "columns": 128, "threads": 2}
+        },
+        {
+          "id": "image-502x458",
+          "profile": "official",
+          "args": ["100", "0.5", "502", "458", "4"],
+          "threads": 4,
+          "parameters": {"iterations": 100, "lambda": 0.5, "rows": 502, "columns": 458, "threads": 4}
+        }
+      ]
+    },
+    {
+      "id": "srad_v2",
+      "workdir": "srad/srad_v2",
+      "executable": "srad",
+      "build": [["make", "bfs"]],
+      "clean": [["make", "clean"]],
+      "sources": ["srad.cpp"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {
+          "id": "image-128",
+          "profile": "smoke",
+          "args": ["128", "128", "0", "31", "0", "31", "2", "0.5", "2"],
+          "threads": 2,
+          "parameters": {"rows": 128, "columns": 128, "roi": "0:31,0:31", "iterations": 2, "lambda": 0.5, "threads": 2}
+        },
+        {
+          "id": "image-2048",
+          "profile": "official",
+          "args": ["2048", "2048", "0", "127", "0", "127", "2", "0.5", "4"],
+          "threads": 4,
+          "parameters": {"rows": 2048, "columns": 2048, "roi": "0:127,0:127", "iterations": 2, "lambda": 0.5, "threads": 4}
+        }
+      ]
+    },
+    {
+      "id": "streamcluster",
+      "workdir": "streamcluster",
+      "executable": "sc_omp",
+      "build": [["make", "omp"]],
+      "clean": [["make", "clean"]],
+      "sources": ["streamcluster_omp.cpp"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {
+          "id": "synthetic-1024",
+          "profile": "smoke",
+          "args": ["3", "5", "16", "1024", "1024", "100", "none", "{null_device}", "2"],
+          "threads": 2,
+          "parameters": {"kmin": 3, "kmax": 5, "dimensions": 16, "points": 1024, "chunk_size": 1024, "center_size": 100, "threads": 2}
+        },
+        {
+          "id": "synthetic-65536",
+          "profile": "official",
+          "args": ["10", "20", "256", "65536", "65536", "1000", "none", "{null_device}", "4"],
+          "threads": 4,
+          "parameters": {"kmin": 10, "kmax": 20, "dimensions": 256, "points": 65536, "chunk_size": 65536, "center_size": 1000, "threads": 4}
+        }
+      ]
+    }
+  ]
+}
