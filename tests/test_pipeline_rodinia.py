@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -134,6 +136,73 @@ class AggregationTests(unittest.TestCase):
 
     def test_null_device_placeholder_targets_linux(self) -> None:
         self.assertEqual(["output", "/dev/null"], pipeline.expand_tokens(["output", "{null_device}"]))
+
+
+class ProcessProbeTests(unittest.TestCase):
+    def test_probe_metrics_parser_preserves_precision_and_units(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            metrics_path = Path(temporary) / "process.metrics"
+            metrics_path.write_text(
+                "probe_version=1\n"
+                "elapsed_ns=123456789\n"
+                "returncode=0\n"
+                "user_us=12000\n"
+                "system_us=3000\n"
+                "max_rss_bytes=4194304\n"
+                "major_faults=1\n"
+                "minor_faults=23\n"
+                "fs_inputs=4\n"
+                "fs_outputs=5\n",
+                encoding="utf-8",
+            )
+            elapsed, returncode, metrics = pipeline.parse_process_probe_metrics(
+                metrics_path
+            )
+
+        self.assertEqual(0, returncode)
+        self.assertAlmostEqual(0.123456789, elapsed)
+        self.assertEqual(0.012, metrics["process_cpu_user_sec"])
+        self.assertEqual(0.003, metrics["process_cpu_system_sec"])
+        self.assertEqual(4194304, metrics["process_max_rss_bytes"])
+        self.assertEqual("linux-process-probe-v1", metrics["process_metrics_backend"])
+
+    def test_probe_metrics_parser_rejects_incomplete_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            metrics_path = Path(temporary) / "process.metrics"
+            metrics_path.write_text(
+                "probe_version=1\nelapsed_ns=10\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                (None, None, {}),
+                pipeline.parse_process_probe_metrics(metrics_path),
+            )
+
+    @unittest.skipUnless(
+        os.name == "posix"
+        and Path("/bin/true").is_file()
+        and any(shutil.which(name) for name in ("cc", "gcc", "clang")),
+        "Linux/POSIX compiler required",
+    )
+    def test_linux_probe_measures_child_instead_of_python_parent(self) -> None:
+        pipeline._PROCESS_PROBE_PATH = None
+        result = pipeline.run_process(
+            ["/bin/true"],
+            Path("/"),
+            os.environ.copy(),
+            timeout=5,
+            measure_process=True,
+            discard_stdout=True,
+        )
+        self.assertTrue(result.success, result.error_message)
+        self.assertEqual(
+            "linux-process-probe-v1",
+            result.metrics["process_metrics_backend"],
+        )
+        self.assertGreater(result.metrics["process_max_rss_bytes"], 0)
+        self.assertLess(result.metrics["process_max_rss_bytes"], 32 * 1024 * 1024)
+        self.assertGreater(result.elapsed_sec, 0)
+        self.assertLess(result.elapsed_sec, 1)
 
 
 class MeasurementTests(unittest.TestCase):

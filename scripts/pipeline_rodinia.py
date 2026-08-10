@@ -35,6 +35,9 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 DEFAULT_MANIFEST = PROJECT_ROOT / "configs" / "rodinia_openmp.json"
 DEFAULT_RODINIA_ROOT = PROJECT_ROOT / "datasets" / "rodinia_3.1"
 DEFAULT_RESULTS_DIR = PROJECT_ROOT / "results"
+PROCESS_PROBE_SOURCE = SCRIPT_DIR / "rodinia_process_probe.c"
+PROCESS_PROBE_BINARY = PROJECT_ROOT / "build" / "rodinia_process_probe"
+_PROCESS_PROBE_PATH: Path | None = None
 
 AST_FIELDS = [
     "ast_node_count",
@@ -406,6 +409,129 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
         pass
 
 
+def ensure_process_probe() -> Path:
+    global _PROCESS_PROBE_PATH
+    if _PROCESS_PROBE_PATH and _PROCESS_PROBE_PATH.is_file():
+        return _PROCESS_PROBE_PATH
+    if os.name != "posix":
+        raise RuntimeError("the Rodinia process probe can only be built on POSIX systems")
+    if not PROCESS_PROBE_SOURCE.is_file():
+        raise RuntimeError(f"process probe source not found: {PROCESS_PROBE_SOURCE}")
+    compiler = next(
+        (path for name in ("cc", "gcc", "clang") if (path := shutil.which(name))),
+        None,
+    )
+    if not compiler:
+        raise RuntimeError("cannot build process probe: cc, gcc, and clang are all unavailable")
+
+    try:
+        PROCESS_PROBE_BINARY.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"cannot create process probe directory: {exc}") from exc
+    temporary_binary = PROCESS_PROBE_BINARY.with_name(
+        f".{PROCESS_PROBE_BINARY.name}.{os.getpid()}"
+    )
+    command = [
+        compiler,
+        "-O2",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        str(PROCESS_PROBE_SOURCE),
+        "-o",
+        str(temporary_binary),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        temporary_binary.unlink(missing_ok=True)
+        raise RuntimeError(f"cannot build process probe: {exc}") from exc
+    if result.returncode != 0:
+        temporary_binary.unlink(missing_ok=True)
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"cannot build process probe: {detail[-4000:]}")
+    try:
+        temporary_binary.replace(PROCESS_PROBE_BINARY)
+    except OSError as exc:
+        temporary_binary.unlink(missing_ok=True)
+        raise RuntimeError(f"cannot install process probe: {exc}") from exc
+    if not os.access(PROCESS_PROBE_BINARY, os.X_OK):
+        raise RuntimeError(f"compiled process probe is not executable: {PROCESS_PROBE_BINARY}")
+    _PROCESS_PROBE_PATH = PROCESS_PROBE_BINARY
+    return PROCESS_PROBE_BINARY
+
+
+def parse_process_probe_metrics(
+    path: Path,
+) -> tuple[float | None, int | None, dict[str, float | int | str]]:
+    if not path.is_file():
+        return None, None, {}
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return None, None, {}
+    for line in lines:
+        key, separator, value = line.partition("=")
+        if separator:
+            values[key.strip()] = value.strip()
+    required = {
+        "probe_version",
+        "elapsed_ns",
+        "returncode",
+        "user_us",
+        "system_us",
+        "max_rss_bytes",
+        "major_faults",
+        "minor_faults",
+        "fs_inputs",
+        "fs_outputs",
+    }
+    if not required.issubset(values) or values["probe_version"] != "1":
+        return None, None, {}
+    try:
+        elapsed_ns = int(values["elapsed_ns"])
+        returncode = int(values["returncode"])
+        user_us = int(values["user_us"])
+        system_us = int(values["system_us"])
+        max_rss_bytes = int(values["max_rss_bytes"])
+        major_faults = int(values["major_faults"])
+        minor_faults = int(values["minor_faults"])
+        fs_inputs = int(values["fs_inputs"])
+        fs_outputs = int(values["fs_outputs"])
+    except ValueError:
+        return None, None, {}
+    if min(
+        elapsed_ns,
+        user_us,
+        system_us,
+        max_rss_bytes,
+        major_faults,
+        minor_faults,
+        fs_inputs,
+        fs_outputs,
+    ) < 0:
+        return None, None, {}
+    metrics: dict[str, float | int | str] = {
+        "process_cpu_user_sec": user_us / 1_000_000,
+        "process_cpu_system_sec": system_us / 1_000_000,
+        "process_max_rss_bytes": max_rss_bytes,
+        "process_major_page_faults": major_faults,
+        "process_minor_page_faults": minor_faults,
+        "process_fs_inputs": fs_inputs,
+        "process_fs_outputs": fs_outputs,
+        "process_metrics_backend": "linux-process-probe-v1",
+    }
+    return elapsed_ns / 1_000_000_000, returncode, metrics
+
+
 def _run_measured_posix(
     command: list[str],
     cwd: Path,
@@ -414,16 +540,23 @@ def _run_measured_posix(
     discard_stdout: bool,
     log_path: Path,
 ) -> ProcessResult:
+    try:
+        process_probe = ensure_process_probe()
+    except RuntimeError as exc:
+        return ProcessResult(command, None, 0.0, False, str(exc), {})
+
     timed_out_event = threading.Event()
     returncode: int | None = None
     metrics: dict[str, float | int | str] = {}
     error_message = ""
     started_ns = time.perf_counter_ns()
+    metrics_path = log_path.parent / "process.metrics"
+    actual_command = [str(process_probe), str(metrics_path), "--", *command]
     try:
         with log_path.open("wb") as log_file:
             stdout_target: Any = subprocess.DEVNULL if discard_stdout else log_file
             process = subprocess.Popen(
-                command,
+                actual_command,
                 cwd=str(cwd),
                 env=environment,
                 stdout=stdout_target,
@@ -432,35 +565,16 @@ def _run_measured_posix(
             )
 
             def terminate_on_timeout() -> None:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
+                if process.poll() is not None:
                     return
                 timed_out_event.set()
+                _kill_process_group(process)
 
             timer = threading.Timer(timeout, terminate_on_timeout)
             timer.daemon = True
             timer.start()
             try:
-                while True:
-                    try:
-                        _, status, usage = os.wait4(process.pid, 0)
-                        break
-                    except InterruptedError:
-                        continue
-                returncode = os.waitstatus_to_exitcode(status)
-                process.returncode = returncode
-                rss_multiplier = 1 if platform.system() == "Darwin" else 1024
-                metrics = {
-                    "process_cpu_user_sec": float(usage.ru_utime),
-                    "process_cpu_system_sec": float(usage.ru_stime),
-                    "process_max_rss_bytes": int(usage.ru_maxrss) * rss_multiplier,
-                    "process_major_page_faults": int(usage.ru_majflt),
-                    "process_minor_page_faults": int(usage.ru_minflt),
-                    "process_fs_inputs": int(usage.ru_inblock),
-                    "process_fs_outputs": int(usage.ru_oublock),
-                    "process_metrics_backend": "wait4-perf-counter",
-                }
+                returncode = process.wait()
             finally:
                 timer.cancel()
                 timer.join()
@@ -470,8 +584,22 @@ def _run_measured_posix(
     elapsed = (time.perf_counter_ns() - started_ns) / 1_000_000_000
     timed_out = timed_out_event.is_set()
     log_text = _read_log(log_path)
+    probe_elapsed, child_returncode, probe_metrics = parse_process_probe_metrics(metrics_path)
+    if probe_elapsed is not None:
+        elapsed = probe_elapsed
+    if child_returncode is not None:
+        returncode = child_returncode
+    if probe_metrics:
+        metrics = probe_metrics
     if timed_out:
         error_message = f"timeout after {timeout:g}s"
+    elif not metrics:
+        detail = "process probe did not produce valid metrics"
+        error_message = " | ".join(
+            dict.fromkeys(part for part in (error_message, log_text, detail) if part)
+        )
+        if returncode in (None, 0):
+            returncode = 125
     elif returncode not in (None, 0):
         error_message = log_text or f"command exited with code {returncode}"
     return ProcessResult(
@@ -495,7 +623,7 @@ def run_process(
     with tempfile.TemporaryDirectory(prefix="rodinia-pipeline-") as temporary:
         temporary_dir = Path(temporary)
         log_path = temporary_dir / "process.log"
-        if measure_process and os.name == "posix" and hasattr(os, "wait4"):
+        if measure_process and os.name == "posix":
             return _run_measured_posix(
                 command,
                 cwd,
@@ -1225,6 +1353,13 @@ def main(argv: list[str] | None = None) -> int:
     if os.name != "posix" and not args.dry_run:
         print("[pipeline] this runtime pipeline must execute on Linux; use --dry-run on Windows", file=sys.stderr)
         return 2
+    if os.name == "posix" and not args.dry_run and not args.build_only:
+        try:
+            process_probe = ensure_process_probe()
+        except RuntimeError as exc:
+            print(f"[pipeline] {exc}", file=sys.stderr)
+            return 2
+        print(f"[pipeline] process metrics probe: {process_probe}")
 
     session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     collected_at = datetime.now().astimezone().isoformat(timespec="seconds")
