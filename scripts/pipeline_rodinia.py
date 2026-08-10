@@ -22,6 +22,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -163,15 +164,21 @@ SUMMARY_FIELDS = [
     "input_profile",
     "input_size_parameters",
     "thread_count",
+    "available_logical_cores",
+    "thread_oversubscribed",
+    "thread_oversubscription_ratio",
     "workdir",
     "executable",
     "source_files",
     "source_file_count",
+    "ast_owned_source_files",
+    "ast_owned_source_count",
     "build_command",
     "run_command",
     "warmup_runs_requested",
     "warmup_runs_completed",
     "measurement_seconds_requested",
+    "min_measured_runs_requested",
     "measurement_seconds_actual",
     "measured_runs",
     "runtime_sec_median",
@@ -234,6 +241,7 @@ class BenchmarkSpec:
     build_commands: tuple[tuple[str, ...], ...]
     clean_commands: tuple[tuple[str, ...], ...]
     sources: tuple[str, ...]
+    ast_owned_sources: tuple[str, ...]
     include_dirs: tuple[str, ...]
     static_flags: tuple[str, ...]
     required_files: tuple[str, ...]
@@ -331,6 +339,15 @@ def load_manifest(path: Path) -> tuple[BenchmarkSpec, ...]:
         environment = raw.get("environment", {})
         if not isinstance(environment, dict):
             raise ValueError(f"{benchmark_id}.environment must be an object")
+        sources = _string_tuple(raw.get("sources", []), f"{benchmark_id}.sources")
+        ast_owned_sources = _string_tuple(
+            raw.get("ast_owned_sources", list(sources)),
+            f"{benchmark_id}.ast_owned_sources",
+        )
+        if not set(sources).issubset(ast_owned_sources):
+            raise ValueError(
+                f"{benchmark_id}.ast_owned_sources must include every translation-unit source"
+            )
         benchmarks.append(
             BenchmarkSpec(
                 benchmark_id=benchmark_id,
@@ -338,7 +355,8 @@ def load_manifest(path: Path) -> tuple[BenchmarkSpec, ...]:
                 executable=str(raw.get("executable", "")),
                 build_commands=_commands(raw.get("build", []), f"{benchmark_id}.build"),
                 clean_commands=_commands(raw.get("clean", []), f"{benchmark_id}.clean"),
-                sources=_string_tuple(raw.get("sources", []), f"{benchmark_id}.sources"),
+                sources=sources,
+                ast_owned_sources=ast_owned_sources,
                 include_dirs=_string_tuple(
                     raw.get("include_dirs", []), f"{benchmark_id}.include_dirs"
                 ),
@@ -388,30 +406,82 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
         pass
 
 
-def _parse_gnu_time(path: Path) -> dict[str, float | int | str]:
+def _run_measured_posix(
+    command: list[str],
+    cwd: Path,
+    environment: dict[str, str],
+    timeout: float,
+    discard_stdout: bool,
+    log_path: Path,
+) -> ProcessResult:
+    timed_out_event = threading.Event()
+    returncode: int | None = None
     metrics: dict[str, float | int | str] = {}
-    if not path.exists():
-        return metrics
-    values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        key, separator, value = line.partition("=")
-        if separator:
-            values[key.strip()] = value.strip()
+    error_message = ""
+    started_ns = time.perf_counter_ns()
     try:
-        metrics = {
-            "command_elapsed_sec": float(values["elapsed_sec"]),
-            "process_cpu_user_sec": float(values["user_sec"]),
-            "process_cpu_system_sec": float(values["system_sec"]),
-            "process_max_rss_bytes": int(values["max_rss_kb"]) * 1024,
-            "process_major_page_faults": int(values["major_faults"]),
-            "process_minor_page_faults": int(values["minor_faults"]),
-            "process_fs_inputs": int(values["fs_inputs"]),
-            "process_fs_outputs": int(values["fs_outputs"]),
-            "process_metrics_backend": "gnu-time",
-        }
-    except (KeyError, ValueError):
-        return {}
-    return metrics
+        with log_path.open("wb") as log_file:
+            stdout_target: Any = subprocess.DEVNULL if discard_stdout else log_file
+            process = subprocess.Popen(
+                command,
+                cwd=str(cwd),
+                env=environment,
+                stdout=stdout_target,
+                stderr=log_file,
+                start_new_session=True,
+            )
+
+            def terminate_on_timeout() -> None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    return
+                timed_out_event.set()
+
+            timer = threading.Timer(timeout, terminate_on_timeout)
+            timer.daemon = True
+            timer.start()
+            try:
+                while True:
+                    try:
+                        _, status, usage = os.wait4(process.pid, 0)
+                        break
+                    except InterruptedError:
+                        continue
+                returncode = os.waitstatus_to_exitcode(status)
+                process.returncode = returncode
+                rss_multiplier = 1 if platform.system() == "Darwin" else 1024
+                metrics = {
+                    "process_cpu_user_sec": float(usage.ru_utime),
+                    "process_cpu_system_sec": float(usage.ru_stime),
+                    "process_max_rss_bytes": int(usage.ru_maxrss) * rss_multiplier,
+                    "process_major_page_faults": int(usage.ru_majflt),
+                    "process_minor_page_faults": int(usage.ru_minflt),
+                    "process_fs_inputs": int(usage.ru_inblock),
+                    "process_fs_outputs": int(usage.ru_oublock),
+                    "process_metrics_backend": "wait4-perf-counter",
+                }
+            finally:
+                timer.cancel()
+                timer.join()
+    except OSError as exc:
+        error_message = str(exc)
+
+    elapsed = (time.perf_counter_ns() - started_ns) / 1_000_000_000
+    timed_out = timed_out_event.is_set()
+    log_text = _read_log(log_path)
+    if timed_out:
+        error_message = f"timeout after {timeout:g}s"
+    elif returncode not in (None, 0):
+        error_message = log_text or f"command exited with code {returncode}"
+    return ProcessResult(
+        command=command,
+        returncode=returncode,
+        elapsed_sec=elapsed,
+        timed_out=timed_out,
+        error_message=error_message[-4000:],
+        metrics=metrics,
+    )
 
 
 def run_process(
@@ -422,28 +492,18 @@ def run_process(
     measure_process: bool,
     discard_stdout: bool,
 ) -> ProcessResult:
-    gnu_time = Path("/usr/bin/time")
-    use_gnu_time = measure_process and os.name == "posix" and gnu_time.exists()
     with tempfile.TemporaryDirectory(prefix="rodinia-pipeline-") as temporary:
         temporary_dir = Path(temporary)
         log_path = temporary_dir / "process.log"
-        metrics_path = temporary_dir / "time.metrics"
-        actual_command = list(command)
-        if use_gnu_time:
-            time_format = (
-                "elapsed_sec=%e\nuser_sec=%U\nsystem_sec=%S\nmax_rss_kb=%M\n"
-                "major_faults=%F\nminor_faults=%R\n"
-                "fs_inputs=%I\nfs_outputs=%O"
+        if measure_process and os.name == "posix" and hasattr(os, "wait4"):
+            return _run_measured_posix(
+                command,
+                cwd,
+                environment,
+                timeout,
+                discard_stdout,
+                log_path,
             )
-            actual_command = [
-                str(gnu_time),
-                "-f",
-                time_format,
-                "-o",
-                str(metrics_path),
-                "--",
-                *command,
-            ]
 
         started = time.perf_counter()
         timed_out = False
@@ -453,7 +513,7 @@ def run_process(
             with log_path.open("wb") as log_file:
                 stdout_target: Any = subprocess.DEVNULL if discard_stdout else log_file
                 process = subprocess.Popen(
-                    actual_command,
+                    command,
                     cwd=str(cwd),
                     env=environment,
                     stdout=stdout_target,
@@ -477,17 +537,13 @@ def run_process(
             error_message = log_text or f"command exited with code {returncode}"
         elif error_message:
             error_message = error_message
-        metrics = _parse_gnu_time(metrics_path) if use_gnu_time else {}
-        command_elapsed = metrics.pop("command_elapsed_sec", None)
-        if not timed_out and isinstance(command_elapsed, (int, float)) and command_elapsed > 0:
-            elapsed = float(command_elapsed)
         return ProcessResult(
             command=command,
             returncode=returncode,
             elapsed_sec=elapsed,
             timed_out=timed_out,
             error_message=error_message[-4000:],
-            metrics=metrics,
+            metrics={},
         )
 
 
@@ -559,8 +615,11 @@ def collect_environment(c_compiler: str, cxx_compiler: str) -> dict[str, Any]:
         for record in cpu_records
         if record.get("core id") is not None
     }
-    logical_cores = os.cpu_count() or len(cpu_records) or 1
-    physical_count = len(physical_cores) or logical_cores
+    try:
+        logical_cores = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        logical_cores = os.cpu_count() or len(cpu_records) or 1
+    physical_count = min(len(physical_cores) or logical_cores, logical_cores)
     socket_count = len(sockets) or 1
     threads_per_core = logical_cores / physical_count if physical_count else 1
 
@@ -692,6 +751,39 @@ def aggregate_ir(rows: list[dict[str, Any]]) -> dict[str, int | float]:
     return result
 
 
+TEXTUAL_C_INCLUDE_RE = re.compile(
+    r'^\s*#\s*include\s+"([^"\n]+\.(?:c|cc|cpp|cxx))"',
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def translation_unit_owned_sources(
+    source_path: Path,
+    declared_source_paths: Iterable[Path],
+) -> list[Path]:
+    declared = {path.resolve() for path in declared_source_paths}
+    result: list[Path] = []
+    visited: set[Path] = set()
+    pending = [source_path.resolve()]
+    while pending:
+        current = pending.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        result.append(current)
+        if not current.is_file():
+            continue
+        source_text = current.read_text(encoding="utf-8", errors="ignore")
+        included_paths = [
+            (current.parent / match).resolve()
+            for match in TEXTUAL_C_INCLUDE_RE.findall(source_text)
+        ]
+        for included_path in reversed(included_paths):
+            if included_path in declared and included_path not in visited:
+                pending.append(included_path)
+    return result
+
+
 def empty_static(status: str) -> dict[str, Any]:
     return {
         "static_status": status,
@@ -721,6 +813,10 @@ def collect_static_features(
     core.ensure_dirs()
 
     workdir = openmp_root / spec.workdir
+    declared_ast_source_paths = [
+        (workdir / relative_source).resolve()
+        for relative_source in spec.ast_owned_sources
+    ]
     extra_flags = list(spec.static_flags)
     for include_dir in spec.include_dirs:
         extra_flags.extend(["-I", str((workdir / include_dir).resolve())])
@@ -737,13 +833,23 @@ def collect_static_features(
             errors.append(f"missing static source: {source_path}")
             continue
         program = core.Program(source_path=source_path, source_root=openmp_root)
+        ast_owned_source_paths = translation_unit_owned_sources(
+            source_path,
+            declared_ast_source_paths,
+        )
         source_ok = True
         try:
             ast_path, ast_ok, ast_error = core.generate_ast(
                 program, c_compiler, cxx_compiler, extra_flags
             )
             if ast_ok:
-                ast_rows.append(core.extract_ast_features(ast_path, source_path))
+                ast_rows.append(
+                    core.extract_ast_features(
+                        ast_path,
+                        source_path,
+                        ast_owned_source_paths,
+                    )
+                )
             else:
                 source_ok = False
                 errors.append(f"AST {program.program_id}: {ast_error}")
@@ -804,6 +910,10 @@ def validate_paths(
         source = (workdir / relative_source).resolve()
         if not source.exists():
             missing.append(f"missing source file: {source}")
+    for relative_source in set(spec.ast_owned_sources) - set(spec.sources):
+        source = (workdir / relative_source).resolve()
+        if not source.exists():
+            missing.append(f"missing AST-owned source file: {source}")
     if require_executable:
         executable = (workdir / spec.executable).resolve()
         if not executable.is_file():
@@ -892,6 +1002,7 @@ def measure_input(
     warmup: int,
     runs: int,
     measurement_seconds: float,
+    min_measured_runs: int,
     timeout: float,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     workdir = openmp_root / spec.workdir
@@ -901,8 +1012,8 @@ def measure_input(
     environment = os.environ.copy()
     environment.update(spec.environment)
     environment.update(input_spec.environment)
-    environment.setdefault("OMP_NUM_THREADS", str(input_spec.threads))
-    environment.setdefault("OMP_DYNAMIC", "FALSE")
+    environment["OMP_NUM_THREADS"] = str(input_spec.threads)
+    environment["OMP_DYNAMIC"] = "FALSE"
     all_rows: list[dict[str, Any]] = []
     measured_results: list[ProcessResult] = []
     errors: list[str] = []
@@ -938,7 +1049,10 @@ def measure_input(
         index = 1
         while True:
             if measurement_seconds > 0:
-                if measured_results and measured_runtime_total >= measurement_seconds:
+                if (
+                    len(measured_results) >= min_measured_runs
+                    and measured_runtime_total >= measurement_seconds
+                ):
                     break
             elif index > runs:
                 break
@@ -1041,12 +1155,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--warmup", type=int, default=1, help="Warmup run count; use 5 for formal collection.")
     parser.add_argument("--runs", type=int, default=5, help="Measured runs when --measurement-seconds is 0.")
     parser.add_argument("--measurement-seconds", type=float, default=10.0)
+    parser.add_argument(
+        "--min-measured-runs",
+        type=int,
+        default=3,
+        help="Minimum measured runs even when the time budget has already been reached.",
+    )
     parser.add_argument("--timeout", type=float, default=120.0, help="Timeout for one benchmark run.")
     parser.add_argument("--build-timeout", type=float, default=600.0)
     parser.add_argument("--clean", action="store_true", help="Run the benchmark clean command before building.")
     parser.add_argument("--skip-build", action="store_true", help="Reuse an existing executable.")
     parser.add_argument("--build-only", action="store_true", help="Build and optionally extract static features only.")
     parser.add_argument("--dry-run", action="store_true", help="Validate paths and print commands without executing.")
+    parser.add_argument(
+        "--allow-oversubscription",
+        action="store_true",
+        help="Allow OpenMP threads to exceed available logical CPUs; use only for functional testing.",
+    )
     parser.add_argument("--c-compiler", default="clang")
     parser.add_argument("--cxx-compiler", default="clang++")
     parser.add_argument("--opt-level", choices=("O0", "O1", "O2", "O3"), default="O2")
@@ -1055,8 +1180,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     static_group.add_argument("--no-static", dest="collect_static", action="store_false")
     parser.set_defaults(collect_static=True)
     args = parser.parse_args(argv)
-    if args.warmup < 0 or args.runs < 1 or args.measurement_seconds < 0:
-        parser.error("warmup must be >= 0, runs >= 1, and measurement-seconds >= 0")
+    if (
+        args.warmup < 0
+        or args.runs < 1
+        or args.min_measured_runs < 1
+        or args.measurement_seconds < 0
+    ):
+        parser.error(
+            "warmup must be >= 0, runs/min-measured-runs >= 1, "
+            "and measurement-seconds >= 0"
+        )
     if args.timeout <= 0 or args.build_timeout <= 0:
         parser.error("timeouts must be positive")
     if args.all and args.benchmark:
@@ -1096,6 +1229,7 @@ def main(argv: list[str] | None = None) -> int:
     session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     collected_at = datetime.now().astimezone().isoformat(timespec="seconds")
     environment_features = collect_environment(args.c_compiler, args.cxx_compiler)
+    available_logical_cores = int(environment_features["cpu_logical_core_count"])
     summary_rows: list[dict[str, Any]] = []
     run_rows: list[dict[str, Any]] = []
     any_failure = False
@@ -1113,6 +1247,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  build: {command_text(expand_tokens(command))}")
             for item in inputs:
                 errors = validate_paths(spec, item, openmp_root, False)
+                if item.threads > available_logical_cores and not args.allow_oversubscription:
+                    errors.append(
+                        f"requested {item.threads} OpenMP threads but only "
+                        f"{available_logical_cores} logical CPUs are available"
+                    )
                 run_cmd = [f"./{spec.executable}", *expand_tokens(item.args)]
                 print(f"  run[{item.input_id}]: {command_text(run_cmd)}")
                 for error in errors:
@@ -1142,6 +1281,19 @@ def main(argv: list[str] | None = None) -> int:
             run_command_display = [f"./{spec.executable}", *expand_tokens(item.args)]
             errors = [*build_errors, *static_errors]
             path_errors = validate_paths(spec, item, openmp_root, build_success)
+            oversubscribed = item.threads > available_logical_cores
+            if oversubscribed and not args.allow_oversubscription:
+                path_errors.append(
+                    "THREADS: requested "
+                    f"{item.threads} OpenMP threads but only {available_logical_cores} "
+                    "logical CPUs are available; move formal collection to a larger "
+                    "machine or use --allow-oversubscription only for functional testing"
+                )
+            elif oversubscribed:
+                print(
+                    f"[threads] warning: {spec.benchmark_id}[{item.input_id}] requests "
+                    f"{item.threads} threads on {available_logical_cores} logical CPUs"
+                )
             errors.extend(path_errors)
             base_row: dict[str, Any] = {
                 "session_id": session_id,
@@ -1155,14 +1307,20 @@ def main(argv: list[str] | None = None) -> int:
                     item.parameters, ensure_ascii=False, sort_keys=True, separators=(",", ":")
                 ),
                 "thread_count": item.threads,
+                "available_logical_cores": available_logical_cores,
+                "thread_oversubscribed": oversubscribed,
+                "thread_oversubscription_ratio": item.threads / available_logical_cores,
                 "workdir": spec.workdir,
                 "executable": spec.executable,
                 "source_files": ";".join(spec.sources),
                 "source_file_count": len(spec.sources),
+                "ast_owned_source_files": ";".join(spec.ast_owned_sources),
+                "ast_owned_source_count": len(spec.ast_owned_sources),
                 "build_command": build_command,
                 "run_command": command_text(run_command_display),
                 "warmup_runs_requested": args.warmup,
                 "measurement_seconds_requested": args.measurement_seconds,
+                "min_measured_runs_requested": args.min_measured_runs,
                 "build_success": build_success,
                 **environment_features,
                 **static_features,
@@ -1180,6 +1338,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.warmup,
                     args.runs,
                     args.measurement_seconds,
+                    args.min_measured_runs,
                     args.timeout,
                 )
                 base_row.update(measured)

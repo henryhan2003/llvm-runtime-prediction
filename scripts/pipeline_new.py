@@ -619,7 +619,7 @@ def generate_cfg(
     if opt_path and ir_path.exists():
         cmd = [opt_path, "-passes=dot-cfg", "-disable-output", str(ir_path)]
         result = run_command(cmd, cwd=program_cfg_dir)
-        dot_files = sorted(program_cfg_dir.glob(".*.dot")) + sorted(program_cfg_dir.glob("*.dot"))
+        dot_files = unique_dot_files(program_cfg_dir)
         if result.returncode == 0 and dot_files:
             return program_cfg_dir, True, result.stderr.strip(), "dot"
         return program_cfg_dir, False, result.stderr.strip(), "dot"
@@ -697,13 +697,77 @@ def max_depth_from_ast_lines(lines: list[str], tokens: tuple[str, ...]) -> int:
     return best
 
 
-def source_owned_ast_text(ast_text: str, source_path: Path) -> str:
-    lines = ast_text.splitlines()
-    marker = source_path.name
-    starts = [index for index, line in enumerate(lines) if marker in line]
-    if not starts:
+AST_SOURCE_LOCATION_RE = re.compile(
+    r"(?:[A-Za-z]:)?[^<>,\s']+\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx|inc):\d+",
+    re.IGNORECASE,
+)
+
+
+def _unique_paths(paths: Iterable[Path]) -> list[Path]:
+    result: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        normalized = str(path.resolve()).replace("\\", "/").casefold()
+        if normalized not in seen:
+            seen.add(normalized)
+            result.append(path.resolve())
+    return result
+
+
+def _ast_line_mentions_owned_source(line: str, source_paths: list[Path]) -> bool:
+    normalized_line = line.replace("\\", "/").casefold()
+    for source_path in source_paths:
+        normalized_path = str(source_path).replace("\\", "/").casefold()
+        if f"{normalized_path}:" in normalized_line:
+            return True
+        if re.search(
+            rf"(?:^|[/<]){re.escape(source_path.name.casefold())}:\d+",
+            normalized_line,
+        ):
+            return True
+    return False
+
+
+def source_owned_ast_text(
+    ast_text: str,
+    source_path: Path,
+    owned_source_paths: Iterable[Path] | None = None,
+) -> str:
+    """Keep complete top-level AST subtrees belonging to project sources.
+
+    Clang abbreviates consecutive source locations as ``line:`` or ``col:``.
+    ``current_location_owned`` preserves that context while top-level
+    declarations are traversed.
+    """
+
+    source_paths = _unique_paths([source_path, *(owned_source_paths or ())])
+    retained: list[str] = []
+    active_owned = False
+    current_location_owned = False
+    found_owned_declaration = False
+
+    for line in ast_text.splitlines():
+        is_top_level = line.startswith(("|-", "`-"))
+        if is_top_level:
+            if _ast_line_mentions_owned_source(line, source_paths):
+                current_location_owned = True
+                active_owned = True
+                found_owned_declaration = True
+            elif AST_SOURCE_LOCATION_RE.search(line) or any(
+                marker in line for marker in ("<built-in>", "<invalid sloc>", "<scratch space>")
+            ):
+                current_location_owned = False
+                active_owned = False
+            elif re.search(r"<(?:line|col):\d+", line):
+                active_owned = current_location_owned
+            else:
+                active_owned = False
+        if active_owned:
+            retained.append(line)
+
+    if not found_owned_declaration:
         return ast_text
-    return "\n".join(lines[min(starts) :])
+    return "\n".join(retained)
 
 
 def detect_recursive_call(source_text: str, function_names: list[str]) -> int:
@@ -728,10 +792,19 @@ def detect_recursive_call(source_text: str, function_names: list[str]) -> int:
     return 0
 
 
-def extract_ast_features(ast_path: Path, source_path: Path) -> dict[str, float | int]:
+def extract_ast_features(
+    ast_path: Path,
+    source_path: Path,
+    owned_source_paths: Iterable[Path] | None = None,
+) -> dict[str, float | int]:
     raw_text = ast_path.read_text(encoding="utf-8", errors="ignore") if ast_path.exists() else ""
-    text = source_owned_ast_text(raw_text, source_path)
-    source_text = source_path.read_text(encoding="utf-8", errors="ignore")
+    source_paths = _unique_paths([source_path, *(owned_source_paths or ())])
+    text = source_owned_ast_text(raw_text, source_path, source_paths)
+    source_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in source_paths
+        if path.is_file()
+    )
     lines = text.splitlines()
     integer_values = literal_numbers(text, r"IntegerLiteral[^\n]*\s(-?\d+)\b")
     float_values = literal_numbers(text, r"FloatingLiteral[^\n]*\s(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b")
@@ -851,9 +924,21 @@ def extract_ir_features(ir_path: Path) -> dict[str, float | int]:
     }
 
 
+def unique_dot_files(directory: Path) -> list[Path]:
+    paths = [*directory.glob(".*.dot"), *directory.glob("*.dot")]
+    return sorted({path.resolve(): path for path in paths}.values(), key=lambda path: path.name)
+
+
 def parse_dot_edges(text: str) -> tuple[set[str], set[tuple[str, str]]]:
-    nodes = set(re.findall(r'Node(0x[0-9A-Fa-f]+|\d+)\s*\[', text))
-    edges = set(re.findall(r'Node(0x[0-9A-Fa-f]+|\d+)\s*->\s*Node(0x[0-9A-Fa-f]+|\d+)', text))
+    node_pattern = r"Node(?:0x[0-9A-Fa-f]+|\d+)"
+    nodes = set(re.findall(rf"\b({node_pattern})\s*\[", text))
+    edges = set(
+        re.findall(
+            rf"\b({node_pattern})(?::[A-Za-z0-9_]+)?\s*->\s*"
+            rf"({node_pattern})(?::[A-Za-z0-9_]+)?",
+            text,
+        )
+    )
     for src, dst in edges:
         nodes.add(src)
         nodes.add(dst)
@@ -880,7 +965,145 @@ def parse_clang_cfg_blocks(text: str) -> tuple[set[int], set[tuple[int, int]]]:
     return blocks, edges
 
 
+def strongly_connected_components(nodes: set, edges: set[tuple]) -> list[set]:
+    adjacency: dict[object, set[object]] = {node: set() for node in nodes}
+    reverse: dict[object, set[object]] = {node: set() for node in nodes}
+    for src, dst in edges:
+        adjacency.setdefault(src, set()).add(dst)
+        reverse.setdefault(dst, set()).add(src)
+
+    visited: set[object] = set()
+    finish_order: list[object] = []
+    for start in sorted(nodes, key=str):
+        if start in visited:
+            continue
+        visited.add(start)
+        stack: list[tuple[object, bool]] = [(start, False)]
+        while stack:
+            node, expanded = stack.pop()
+            if expanded:
+                finish_order.append(node)
+                continue
+            stack.append((node, True))
+            for dst in sorted(adjacency.get(node, set()), key=str, reverse=True):
+                if dst not in visited:
+                    visited.add(dst)
+                    stack.append((dst, False))
+
+    components: list[set] = []
+    assigned: set[object] = set()
+    for start in reversed(finish_order):
+        if start in assigned:
+            continue
+        component = {start}
+        assigned.add(start)
+        stack = [start]
+        while stack:
+            node = stack.pop()
+            for src in reverse.get(node, set()):
+                if src not in assigned:
+                    assigned.add(src)
+                    component.add(src)
+                    stack.append(src)
+        components.append(component)
+    return components
+
+
+def weak_component_count(nodes: set, edges: set[tuple]) -> int:
+    if not nodes:
+        return 0
+    adjacency: dict[object, set[object]] = {node: set() for node in nodes}
+    for src, dst in edges:
+        adjacency.setdefault(src, set()).add(dst)
+        adjacency.setdefault(dst, set()).add(src)
+    remaining = set(nodes)
+    count = 0
+    while remaining:
+        count += 1
+        stack = [remaining.pop()]
+        while stack:
+            node = stack.pop()
+            for neighbor in adjacency.get(node, set()):
+                if neighbor in remaining:
+                    remaining.remove(neighbor)
+                    stack.append(neighbor)
+    return count
+
+
+def dominator_backedges(
+    nodes: set,
+    edges: set[tuple],
+    in_degree: dict,
+) -> set[tuple]:
+    if not nodes:
+        return set()
+    predecessors: dict[object, set[object]] = {node: set() for node in nodes}
+    for src, dst in edges:
+        predecessors.setdefault(dst, set()).add(src)
+    entries = {node for node in nodes if in_degree.get(node, 0) == 0}
+    if not entries:
+        entries = {min(nodes, key=str)}
+
+    dominators: dict[object, set] = {
+        node: ({node} if node in entries else set(nodes)) for node in nodes
+    }
+    changed = True
+    while changed:
+        changed = False
+        for node in sorted(nodes - entries, key=str):
+            preds = predecessors.get(node, set())
+            if preds:
+                common = set(nodes)
+                for pred in preds:
+                    common.intersection_update(dominators[pred])
+                updated = {node, *common}
+            else:
+                updated = {node}
+            if updated != dominators[node]:
+                dominators[node] = updated
+                changed = True
+    return {(src, dst) for src, dst in edges if dst in dominators.get(src, set())}
+
+
+def natural_loops(nodes: set, edges: set[tuple], backedges: set[tuple]) -> list[set]:
+    predecessors: dict[object, set[object]] = {node: set() for node in nodes}
+    for src, dst in edges:
+        predecessors.setdefault(dst, set()).add(src)
+    loops: set[frozenset] = set()
+    for tail, header in backedges:
+        members = {header, tail}
+        stack = [] if tail == header else [tail]
+        while stack:
+            node = stack.pop()
+            for pred in predecessors.get(node, set()):
+                if pred not in members:
+                    members.add(pred)
+                    stack.append(pred)
+        loops.add(frozenset(members))
+    return [set(loop) for loop in loops]
+
+
+def loop_nesting_depth(loops: list[set]) -> int:
+    if not loops:
+        return 0
+
+    def depth(loop: set, seen: set[int]) -> int:
+        index = id(loop)
+        if index in seen:
+            return 1
+        parents = [candidate for candidate in loops if loop < candidate]
+        if not parents:
+            return 1
+        return 1 + max(depth(parent, seen | {index}) for parent in parents)
+
+    return max(depth(loop, set()) for loop in loops)
+
+
 def graph_features(nodes: set, edges: set[tuple]) -> dict[str, float | int]:
+    nodes = set(nodes)
+    for src, dst in edges:
+        nodes.add(src)
+        nodes.add(dst)
     node_count = len(nodes)
     edge_count = len(edges)
     out_degree = {node: 0 for node in nodes}
@@ -890,26 +1113,31 @@ def graph_features(nodes: set, edges: set[tuple]) -> dict[str, float | int]:
         in_degree[dst] = in_degree.get(dst, 0) + 1
     branch_blocks = sum(1 for value in out_degree.values() if value > 1)
     merge_blocks = sum(1 for value in in_degree.values() if value > 1)
-    backedges = 0
-    for src, dst in edges:
-        try:
-            backedges += 1 if int(str(dst), 16 if str(dst).startswith("0x") else 10) <= int(str(src), 16 if str(src).startswith("0x") else 10) else 0
-        except ValueError:
-            pass
+    backedges = dominator_backedges(nodes, edges, in_degree)
+    loops = natural_loops(nodes, edges, backedges)
+    components = strongly_connected_components(nodes, edges)
+    cyclic_components = sum(
+        1
+        for component in components
+        if len(component) > 1 or any(src == dst and src in component for src, dst in edges)
+    )
+    connected_components = weak_component_count(nodes, edges)
     depth = approximate_depth(nodes, edges)
     return {
         "basic_block_count": node_count,
         "cfg_edge_count": edge_count,
-        "cyclomatic_complexity": max(edge_count - node_count + 2, 0) if node_count else 0,
+        "cyclomatic_complexity": (
+            max(edge_count - node_count + 2 * connected_components, 0) if node_count else 0
+        ),
         "branch_block_count": branch_blocks,
         "merge_block_count": merge_blocks,
         "avg_in_degree": statistics.mean(in_degree.values()) if in_degree else 0,
         "avg_out_degree": statistics.mean(out_degree.values()) if out_degree else 0,
         "max_out_degree": max(out_degree.values()) if out_degree else 0,
-        "loop_backedge_count": backedges,
-        "natural_loop_count": backedges,
-        "max_cfg_loop_depth": 1 if backedges else 0,
-        "scc_count": 0,
+        "loop_backedge_count": len(backedges),
+        "natural_loop_count": len(loops),
+        "max_cfg_loop_depth": loop_nesting_depth(loops),
+        "scc_count": cyclic_components,
         "cfg_depth": depth,
         "unreachable_block_count": 0,
         "critical_edge_count": sum(1 for src, dst in edges if out_degree.get(src, 0) > 1 and in_degree.get(dst, 0) > 1),
@@ -919,56 +1147,78 @@ def graph_features(nodes: set, edges: set[tuple]) -> dict[str, float | int]:
 def approximate_depth(nodes: set, edges: set[tuple]) -> int:
     if not nodes:
         return 0
-    starts = [node for node in nodes if not any(dst == node for _, dst in edges)]
-    if not starts:
-        starts = [next(iter(nodes))]
-    adjacency: dict[object, list[object]] = {node: [] for node in nodes}
+    components = strongly_connected_components(nodes, edges)
+    component_index = {
+        node: index for index, component in enumerate(components) for node in component
+    }
+    adjacency: dict[int, set[int]] = {index: set() for index in range(len(components))}
+    in_degree = {index: 0 for index in range(len(components))}
     for src, dst in edges:
-        adjacency.setdefault(src, []).append(dst)
-    best = 0
-    queue = [(start, 1, {start}) for start in starts]
+        src_component = component_index[src]
+        dst_component = component_index[dst]
+        if src_component != dst_component and dst_component not in adjacency[src_component]:
+            adjacency[src_component].add(dst_component)
+            in_degree[dst_component] += 1
+    queue = [component for component, degree in in_degree.items() if degree == 0]
+    distance = {component: 1 for component in queue}
     while queue:
-        node, depth, seen = queue.pop(0)
-        best = max(best, depth)
-        for dst in adjacency.get(node, []):
-            if dst not in seen:
-                queue.append((dst, depth + 1, seen | {dst}))
-    return best
+        component = queue.pop(0)
+        for dst in adjacency[component]:
+            distance[dst] = max(distance.get(dst, 1), distance[component] + 1)
+            in_degree[dst] -= 1
+            if in_degree[dst] == 0:
+                queue.append(dst)
+    return max(distance.values(), default=1)
+
+
+def aggregate_cfg_graphs(graphs: list[tuple[set, set[tuple]]]) -> dict[str, float | int]:
+    rows = [graph_features(nodes, edges) for nodes, edges in graphs if nodes]
+    result = {field: 0 for field in CFG_FIELDS}
+    result["cfg_function_count"] = len(rows)
+    if not rows:
+        return result
+    sum_fields = [
+        "basic_block_count",
+        "cfg_edge_count",
+        "cyclomatic_complexity",
+        "branch_block_count",
+        "merge_block_count",
+        "loop_backedge_count",
+        "natural_loop_count",
+        "scc_count",
+        "unreachable_block_count",
+        "critical_edge_count",
+    ]
+    for field in sum_fields:
+        result[field] = sum(row[field] for row in rows)
+    blocks = result["basic_block_count"]
+    edges = result["cfg_edge_count"]
+    result["avg_in_degree"] = safe_ratio(edges, blocks)
+    result["avg_out_degree"] = safe_ratio(edges, blocks)
+    for field in ["max_out_degree", "max_cfg_loop_depth", "cfg_depth"]:
+        result[field] = max(row[field] for row in rows)
+    return result
 
 
 def extract_cfg_features(cfg_path: Path) -> dict[str, float | int]:
-    rows = {field: 0 for field in CFG_FIELDS}
     if cfg_path.is_dir():
-        functions = 0
-        all_nodes: set[str] = set()
-        all_edges: set[tuple[str, str]] = set()
-        for dot_file in sorted(list(cfg_path.glob(".*.dot")) + list(cfg_path.glob("*.dot"))):
+        graphs: list[tuple[set, set[tuple]]] = []
+        for dot_file in unique_dot_files(cfg_path):
             text = dot_file.read_text(encoding="utf-8", errors="ignore")
             nodes, edges = parse_dot_edges(text)
             if nodes:
-                functions += 1
-                prefix = dot_file.name
-                all_nodes.update(f"{prefix}:{node}" for node in nodes)
-                all_edges.update((f"{prefix}:{src}", f"{prefix}:{dst}") for src, dst in edges)
-        rows.update(graph_features(all_nodes, all_edges))
-        rows["cfg_function_count"] = functions
-        return rows
+                graphs.append((nodes, edges))
+        return aggregate_cfg_graphs(graphs)
 
     text = cfg_path.read_text(encoding="utf-8", errors="ignore") if cfg_path.exists() else ""
     sections = re.split(r"\n(?=[A-Za-z_]\w*\s*\()", text)
-    total_nodes: set[str] = set()
-    total_edges: set[tuple[str, str]] = set()
-    function_count = 0
+    graphs = []
     for index, section in enumerate(sections):
         nodes, edges = parse_clang_cfg_blocks(section)
         if not nodes:
             continue
-        function_count += 1
-        total_nodes.update(f"{index}:{node}" for node in nodes)
-        total_edges.update((f"{index}:{src}", f"{index}:{dst}") for src, dst in edges)
-    rows.update(graph_features(total_nodes, total_edges))
-    rows["cfg_function_count"] = function_count
-    return rows
+        graphs.append((nodes, edges))
+    return aggregate_cfg_graphs(graphs)
 
 
 def strip_c_comments(text: str) -> str:
