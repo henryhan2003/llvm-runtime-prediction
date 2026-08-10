@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+"""Collect PolyBenchC static and runtime features on Windows or Linux."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,10 +12,12 @@ import math
 import os
 import platform
 import re
+import signal
 import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -28,11 +33,12 @@ try:
 except ImportError as exc:
     raise SystemExit(
         "Prometheus monitoring requires prometheus-client. "
-        "Install it in the PyCharm interpreter with: python -m pip install prometheus-client"
+        "Install it with: python -m pip install prometheus-client"
     ) from exc
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
 DEFAULT_SOURCE_DIR = PROJECT_ROOT / "datasets" / "test"
 AST_DIR = PROJECT_ROOT / "ast"
 IR_DIR = PROJECT_ROOT / "llvm_ir"
@@ -40,6 +46,9 @@ CFG_DIR = PROJECT_ROOT / "cfg"
 RESULTS_DIR = PROJECT_ROOT / "results"
 BUILD_DIR = PROJECT_ROOT / "build" / "pipeline"
 COMPAT_INCLUDE_DIR = PROJECT_ROOT / "scripts" / "compat_include"
+PROCESS_PROBE_SOURCE = SCRIPT_DIR / "rodinia_process_probe.c"
+PROCESS_PROBE_BINARY = PROJECT_ROOT / "build" / "polybench_process_probe"
+_PROCESS_PROBE_PATH: Path | None = None
 
 SOURCE_EXTENSIONS = {".c", ".cc", ".cpp", ".cxx"}
 POLYBENCH_DATASET_PROFILES = (
@@ -120,22 +129,45 @@ PROMETHEUS_RESULT_FIELDS = [
     "prometheus_collection_error",
 ]
 
-PROMETHEUS_HOST_QUERIES = {
-    "cpu": 'windows_cpu_time_total{job="windows"}',
-    "memory_used": (
-        'windows_memory_physical_total_bytes{job="windows"} '
-        '- windows_memory_available_bytes{job="windows"}'
-    ),
-    "disk_read": 'windows_logical_disk_read_bytes_total{job="windows"}',
-    "disk_write": 'windows_logical_disk_write_bytes_total{job="windows"}',
-    "network": 'windows_net_bytes_total{job="windows"}',
+PROMETHEUS_HOST_QUERY_TEMPLATES = {
+    "windows": {
+        "cpu": "windows_cpu_time_total{selector}",
+        "memory_used": (
+            "windows_memory_physical_total_bytes{selector} "
+            "- windows_memory_available_bytes{selector}"
+        ),
+        "disk_read": "windows_logical_disk_read_bytes_total{selector}",
+        "disk_write": "windows_logical_disk_write_bytes_total{selector}",
+        "network": "windows_net_bytes_total{selector}",
+    },
+    "node": {
+        "cpu": "node_cpu_seconds_total{selector}",
+        "memory_used": (
+            "node_memory_MemTotal_bytes{selector} "
+            "- node_memory_MemAvailable_bytes{selector}"
+        ),
+        "disk_read": "node_disk_read_bytes_total{selector}",
+        "disk_write": "node_disk_written_bytes_total{selector}",
+        "network": (
+            "node_network_receive_bytes_total{selector} "
+            "+ node_network_transmit_bytes_total{selector}"
+        ),
+    },
 }
 
 PROCESS_RUN_FIELDS = [
     "process_id",
     "process_cpu_user_sec",
-    "process_cpu_kernel_sec",
+    "process_cpu_system_sec",
     "process_cpu_total_sec",
+    "process_max_rss_bytes",
+    "process_major_page_faults",
+    "process_minor_page_faults",
+    "process_fs_inputs",
+    "process_fs_outputs",
+    "process_metrics_backend",
+    # Retained for compatibility with previously collected Windows CSV files.
+    "process_cpu_kernel_sec",
     "process_peak_working_set_bytes",
     "process_peak_private_bytes",
     "process_page_faults",
@@ -149,9 +181,20 @@ PROCESS_RUN_FIELDS = [
 MEASUREMENT_SUMMARY_FIELDS = [
     "measurement_target_seconds",
     "measurement_actual_seconds",
+    "min_measured_runs_requested",
     "successful_runs",
     "failed_runs",
     "process_metrics_sampled_runs",
+    "process_metric_aggregation",
+    "process_cpu_user_sec",
+    "process_cpu_system_sec",
+    "process_max_rss_bytes",
+    "process_major_page_faults",
+    "process_minor_page_faults",
+    "process_fs_inputs",
+    "process_fs_outputs",
+    "process_max_rss_bytes_peak",
+    "process_metrics_backend",
     "process_cpu_user_sec_total",
     "process_cpu_kernel_sec_total",
     "process_cpu_total_sec_total",
@@ -447,6 +490,75 @@ def windows_cpu_topology() -> dict[str, object]:
         return empty
 
 
+def _parse_hardware_size(value: str) -> int:
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([KMGTP]?)B?\s*", value, re.IGNORECASE)
+    if not match:
+        return 0
+    scale = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+    return int(float(match.group(1)) * scale[match.group(2).upper()])
+
+
+def linux_cpu_info() -> dict[str, object]:
+    if os.name != "posix":
+        return {}
+    records: list[dict[str, str]] = []
+    cpuinfo = Path("/proc/cpuinfo")
+    if cpuinfo.exists():
+        try:
+            sections = cpuinfo.read_text(encoding="utf-8", errors="ignore").split("\n\n")
+        except OSError:
+            sections = []
+        for section in sections:
+            record: dict[str, str] = {}
+            for line in section.splitlines():
+                key, separator, value = line.partition(":")
+                if separator:
+                    record[key.strip()] = value.strip()
+            if record:
+                records.append(record)
+
+    try:
+        logical_cores = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        logical_cores = os.cpu_count() or len(records) or 1
+    sockets = {record.get("physical id") for record in records if record.get("physical id")}
+    physical_cores = {
+        (record.get("physical id", "0"), record.get("core id"))
+        for record in records
+        if record.get("core id") is not None
+    }
+    physical_count = min(len(physical_cores) or logical_cores, logical_cores)
+
+    cache_bytes: dict[int, int] = {}
+    cache_root = Path("/sys/devices/system/cpu/cpu0/cache")
+    if cache_root.exists():
+        for index_dir in cache_root.glob("index*"):
+            try:
+                level = int((index_dir / "level").read_text().strip())
+                size = _parse_hardware_size((index_dir / "size").read_text().strip())
+            except (OSError, ValueError):
+                continue
+            cache_bytes[level] = cache_bytes.get(level, 0) + size
+
+    first = records[0] if records else {}
+    try:
+        nominal_frequency = float(first.get("cpu MHz", 0) or 0)
+    except ValueError:
+        nominal_frequency = 0.0
+    return {
+        "cpu_model": first.get("model name", platform.processor()),
+        "cpu_vendor": first.get("vendor_id", ""),
+        "cpu_identifier": first.get("model", ""),
+        "cpu_socket_count": len(sockets) or 1,
+        "cpu_physical_core_count": physical_count,
+        "cpu_logical_core_count": logical_cores,
+        "cpu_l1_cache_bytes": cache_bytes.get(1, 0),
+        "cpu_l2_cache_bytes": cache_bytes.get(2, 0),
+        "cpu_l3_cache_bytes": cache_bytes.get(3, 0),
+        "cpu_nominal_frequency_mhz": nominal_frequency,
+    }
+
+
 def total_physical_memory_bytes() -> int | str:
     if os.name == "nt":
         class MemoryStatusEx(ctypes.Structure):
@@ -478,9 +590,23 @@ def total_physical_memory_bytes() -> int | str:
 
 
 def collect_static_environment() -> dict[str, object]:
-    logical_cores = os.cpu_count() or ""
-    registry_info = windows_registry_cpu_info()
-    topology = windows_cpu_topology()
+    if os.name == "nt":
+        processor_info = windows_registry_cpu_info()
+        topology = windows_cpu_topology()
+        logical_cores: int | str = os.cpu_count() or ""
+    else:
+        processor_info = linux_cpu_info()
+        topology = {
+            field: processor_info.get(field, "")
+            for field in (
+                "cpu_socket_count",
+                "cpu_physical_core_count",
+                "cpu_l1_cache_bytes",
+                "cpu_l2_cache_bytes",
+                "cpu_l3_cache_bytes",
+            )
+        }
+        logical_cores = processor_info.get("cpu_logical_core_count", os.cpu_count() or "")
     physical_cores = topology["cpu_physical_core_count"]
     threads_per_core: float | str = ""
     if isinstance(logical_cores, int) and isinstance(physical_cores, int) and physical_cores:
@@ -489,16 +615,20 @@ def collect_static_environment() -> dict[str, object]:
         "os_system": platform.system(),
         "os_release": platform.release(),
         "os_version": platform.version(),
-        "cpu_model": registry_info.get("cpu_model") or platform.processor(),
-        "cpu_vendor": registry_info.get("cpu_vendor", ""),
-        "cpu_identifier": registry_info.get("cpu_identifier", ""),
+        "cpu_model": processor_info.get("cpu_model") or platform.processor(),
+        "cpu_vendor": processor_info.get("cpu_vendor", ""),
+        "cpu_identifier": processor_info.get("cpu_identifier", ""),
         "cpu_architecture": platform.machine(),
         **topology,
         "cpu_logical_core_count": logical_cores,
         "cpu_threads_per_core": threads_per_core,
-        "cpu_nominal_frequency_mhz": registry_info.get("cpu_nominal_frequency_mhz", ""),
+        "cpu_nominal_frequency_mhz": processor_info.get("cpu_nominal_frequency_mhz", ""),
         "memory_total_bytes": total_physical_memory_bytes(),
     }
+
+
+def default_env_id() -> str:
+    return f"{platform.node() or 'unknown-host'}-{platform.machine() or 'unknown-arch'}"
 
 
 def matches_any_pattern(relative_path: Path, patterns: Iterable[str]) -> bool:
@@ -1459,6 +1589,32 @@ def summarize(values: list[float]) -> dict[str, float | int]:
     }
 
 
+def resolve_prometheus_exporter(value: str) -> str:
+    if value != "auto":
+        return value
+    return "windows" if os.name == "nt" else "node"
+
+
+def prometheus_host_queries(
+    exporter: str,
+    job: str,
+    instance: str,
+) -> dict[str, str]:
+    if exporter == "off":
+        return {}
+    templates = PROMETHEUS_HOST_QUERY_TEMPLATES[exporter]
+    labels: list[str] = []
+    if job:
+        labels.append(f"job={json.dumps(job)}")
+    if instance:
+        labels.append(f"instance={json.dumps(instance)}")
+    selector = "{" + ",".join(labels) + "}"
+    return {
+        name: template.format(selector=selector)
+        for name, template in templates.items()
+    }
+
+
 def prometheus_query_range(
     base_url: str,
     query: str,
@@ -1564,6 +1720,7 @@ def collect_prometheus_host_metrics(
     end_timestamp: float,
     step_seconds: float,
     timeout_seconds: float,
+    queries: dict[str, str],
 ) -> dict[str, object]:
     results = {
         name: prometheus_query_range(
@@ -1574,7 +1731,7 @@ def collect_prometheus_host_metrics(
             step_seconds,
             timeout_seconds,
         )
-        for name, query in PROMETHEUS_HOST_QUERIES.items()
+        for name, query in queries.items()
     }
     cpu_samples = cpu_usage_samples(results["cpu"])
     memory_samples = gauge_values_by_timestamp(results["memory_used"])
@@ -1603,28 +1760,18 @@ def collect_prometheus_host_metrics(
 
 
 def empty_process_metrics(error: str = "") -> dict[str, object]:
-    # Successful Windows runs replace these fallback values after the process exits.
-    return {
-        "process_id": "",
-        "process_cpu_user_sec": "",
-        "process_cpu_kernel_sec": "",
-        "process_cpu_total_sec": "",
-        "process_peak_working_set_bytes": "",
-        "process_peak_private_bytes": "",
-        "process_page_faults": "",
-        "process_read_bytes": "",
-        "process_write_bytes": "",
-        "process_other_bytes": "",
-        "process_metrics_success": False,
-        "process_metrics_error": error,
-    }
+    metrics = {field: "" for field in PROCESS_RUN_FIELDS}
+    metrics["process_metrics_success"] = False
+    metrics["process_metrics_error"] = error
+    return metrics
 
 
 def windows_process_metrics(process: subprocess.Popen[str]) -> dict[str, object]:
     metrics = empty_process_metrics()
     metrics["process_id"] = process.pid
+    metrics["process_metrics_backend"] = "windows-native-v1"
     if os.name != "nt":
-        metrics["process_metrics_error"] = "Detailed process metrics are implemented for Windows only"
+        metrics["process_metrics_error"] = "Windows process metrics requested on a non-Windows host"
         return metrics
 
     class FileTime(ctypes.Structure):
@@ -1680,6 +1827,7 @@ def windows_process_metrics(process: subprocess.Popen[str]) -> dict[str, object]
         user_seconds = filetime_seconds(user)
         kernel_seconds = filetime_seconds(kernel)
         metrics["process_cpu_user_sec"] = user_seconds
+        metrics["process_cpu_system_sec"] = kernel_seconds
         metrics["process_cpu_kernel_sec"] = kernel_seconds
         metrics["process_cpu_total_sec"] = user_seconds + kernel_seconds
     else:
@@ -1695,6 +1843,7 @@ def windows_process_metrics(process: subprocess.Popen[str]) -> dict[str, object]
     ]
     get_process_memory_info.restype = wintypes.BOOL
     if get_process_memory_info(handle, memory, memory.cb):
+        metrics["process_max_rss_bytes"] = int(memory.peak_working_set_size)
         metrics["process_peak_working_set_bytes"] = int(memory.peak_working_set_size)
         metrics["process_peak_private_bytes"] = int(memory.peak_pagefile_usage)
         metrics["process_page_faults"] = int(memory.page_fault_count)
@@ -1717,31 +1866,208 @@ def windows_process_metrics(process: subprocess.Popen[str]) -> dict[str, object]
     return metrics
 
 
+def ensure_process_probe() -> Path:
+    global _PROCESS_PROBE_PATH
+    if not PROCESS_PROBE_SOURCE.is_file():
+        raise RuntimeError(f"process probe source not found: {PROCESS_PROBE_SOURCE}")
+    if _PROCESS_PROBE_PATH and _PROCESS_PROBE_PATH.is_file():
+        if _PROCESS_PROBE_PATH.stat().st_mtime >= PROCESS_PROBE_SOURCE.stat().st_mtime:
+            return _PROCESS_PROBE_PATH
+    if os.name != "posix":
+        raise RuntimeError("the process probe can only be built on POSIX systems")
+    if PROCESS_PROBE_BINARY.is_file():
+        if PROCESS_PROBE_BINARY.stat().st_mtime >= PROCESS_PROBE_SOURCE.stat().st_mtime:
+            _PROCESS_PROBE_PATH = PROCESS_PROBE_BINARY
+            return PROCESS_PROBE_BINARY
+    compiler = next(
+        (path for name in ("cc", "gcc", "clang") if (path := shutil.which(name))),
+        None,
+    )
+    if not compiler:
+        raise RuntimeError("cannot build process probe: cc, gcc, and clang are all unavailable")
+
+    PROCESS_PROBE_BINARY.parent.mkdir(parents=True, exist_ok=True)
+    temporary_binary = PROCESS_PROBE_BINARY.with_name(
+        f".{PROCESS_PROBE_BINARY.name}.{os.getpid()}"
+    )
+    command = [
+        compiler,
+        "-O2",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        str(PROCESS_PROBE_SOURCE),
+        "-o",
+        str(temporary_binary),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        temporary_binary.unlink(missing_ok=True)
+        raise RuntimeError(f"cannot build process probe: {exc}") from exc
+    if result.returncode != 0:
+        temporary_binary.unlink(missing_ok=True)
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"cannot build process probe: {detail[-4000:]}")
+    temporary_binary.replace(PROCESS_PROBE_BINARY)
+    if not os.access(PROCESS_PROBE_BINARY, os.X_OK):
+        raise RuntimeError(f"compiled process probe is not executable: {PROCESS_PROBE_BINARY}")
+    _PROCESS_PROBE_PATH = PROCESS_PROBE_BINARY
+    return PROCESS_PROBE_BINARY
+
+
+def parse_process_probe_metrics(
+    path: Path,
+) -> tuple[float | None, int | None, dict[str, object]]:
+    if not path.is_file():
+        return None, None, {}
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return None, None, {}
+    for line in lines:
+        key, separator, value = line.partition("=")
+        if separator:
+            values[key.strip()] = value.strip()
+    required = {
+        "probe_version",
+        "elapsed_ns",
+        "returncode",
+        "user_us",
+        "system_us",
+        "max_rss_bytes",
+        "major_faults",
+        "minor_faults",
+        "fs_inputs",
+        "fs_outputs",
+    }
+    if not required.issubset(values) or values["probe_version"] != "1":
+        return None, None, {}
+    try:
+        elapsed_ns = int(values["elapsed_ns"])
+        returncode = int(values["returncode"])
+        user_us = int(values["user_us"])
+        system_us = int(values["system_us"])
+        max_rss_bytes = int(values["max_rss_bytes"])
+        major_faults = int(values["major_faults"])
+        minor_faults = int(values["minor_faults"])
+        fs_inputs = int(values["fs_inputs"])
+        fs_outputs = int(values["fs_outputs"])
+    except ValueError:
+        return None, None, {}
+    if min(
+        elapsed_ns,
+        user_us,
+        system_us,
+        max_rss_bytes,
+        major_faults,
+        minor_faults,
+        fs_inputs,
+        fs_outputs,
+    ) < 0:
+        return None, None, {}
+
+    metrics = empty_process_metrics()
+    metrics.update(
+        {
+            "process_cpu_user_sec": user_us / 1_000_000,
+            "process_cpu_system_sec": system_us / 1_000_000,
+            "process_cpu_kernel_sec": system_us / 1_000_000,
+            "process_cpu_total_sec": (user_us + system_us) / 1_000_000,
+            "process_max_rss_bytes": max_rss_bytes,
+            "process_peak_working_set_bytes": max_rss_bytes,
+            "process_major_page_faults": major_faults,
+            "process_minor_page_faults": minor_faults,
+            "process_page_faults": major_faults + minor_faults,
+            "process_fs_inputs": fs_inputs,
+            "process_fs_outputs": fs_outputs,
+            "process_metrics_backend": "linux-process-probe-v1",
+            "process_metrics_success": True,
+            "process_metrics_error": "",
+        }
+    )
+    return elapsed_ns / 1_000_000_000, returncode, metrics
+
+
+def _kill_process_group(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+    except ProcessLookupError:
+        pass
+
+
 def run_monitored_command(
     cmd: list[str],
     cwd: Path | None = None,
     timeout: int | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], float, bool, dict[str, object]]:
+    process_probe: Path | None = None
+    metrics_directory: tempfile.TemporaryDirectory[str] | None = None
+    metrics_path: Path | None = None
+    actual_command = cmd
+    if os.name == "posix":
+        try:
+            process_probe = ensure_process_probe()
+        except RuntimeError as exc:
+            metrics = empty_process_metrics(str(exc))
+            result = subprocess.CompletedProcess(cmd, 125, "", str(exc))
+            return result, 0.0, False, metrics
+        metrics_directory = tempfile.TemporaryDirectory(prefix="polybench-process-")
+        metrics_path = Path(metrics_directory.name) / "metrics.txt"
+        actual_command = [str(process_probe), str(metrics_path), "--", *cmd]
+
     start = time.perf_counter()
     process = subprocess.Popen(
-        cmd,
+        actual_command,
         cwd=str(cwd) if cwd else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="ignore",
+        start_new_session=os.name == "posix",
     )
     timed_out = False
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
-        process.kill()
+        _kill_process_group(process)
         stdout, stderr = process.communicate()
     elapsed = time.perf_counter() - start
-    process_metrics = windows_process_metrics(process)
-    result = subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
+    returncode = process.returncode
+    if os.name == "nt":
+        process_metrics = windows_process_metrics(process)
+    else:
+        probe_elapsed, child_returncode, process_metrics = parse_process_probe_metrics(
+            metrics_path or Path()
+        )
+        if probe_elapsed is not None:
+            elapsed = probe_elapsed
+        if child_returncode is not None:
+            returncode = child_returncode
+        if not process_metrics:
+            message = "process probe did not produce valid metrics"
+            process_metrics = empty_process_metrics(message)
+            if not timed_out:
+                returncode = 125
+                stderr = " | ".join(part for part in (stderr.strip(), message) if part)
+    if metrics_directory is not None:
+        metrics_directory.cleanup()
+    result = subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
     return result, elapsed, timed_out, process_metrics
 
 
@@ -1758,25 +2084,50 @@ def summarize_process_records(
     records: list[dict[str, object]],
     target_seconds: float,
     actual_seconds: float,
+    min_measured_runs: int,
 ) -> dict[str, object]:
     successful = [record for record in records if record.get("success") is True]
     sampled = [record for record in records if record.get("process_metrics_success") is True]
 
-    def total(field: str) -> float:
-        return sum(numeric_record_values(sampled, field))
+    def total(field: str) -> float | str:
+        values = numeric_record_values(sampled, field)
+        return sum(values) if values else ""
+
+    def mean(field: str) -> float | str:
+        values = numeric_record_values(sampled, field)
+        return statistics.mean(values) if values else ""
 
     cpu_totals = numeric_record_values(sampled, "process_cpu_total_sec")
     peak_working_sets = numeric_record_values(sampled, "process_peak_working_set_bytes")
     peak_private_bytes = numeric_record_values(sampled, "process_peak_private_bytes")
+    max_rss_values = numeric_record_values(sampled, "process_max_rss_bytes")
+    backends = sorted(
+        {
+            str(record.get("process_metrics_backend"))
+            for record in sampled
+            if record.get("process_metrics_backend")
+        }
+    )
     return {
         "measurement_target_seconds": target_seconds,
         "measurement_actual_seconds": actual_seconds,
+        "min_measured_runs_requested": min_measured_runs,
         "successful_runs": len(successful),
         "failed_runs": len(records) - len(successful),
         "process_metrics_sampled_runs": len(sampled),
+        "process_metric_aggregation": "mean of measured runs",
+        "process_cpu_user_sec": mean("process_cpu_user_sec"),
+        "process_cpu_system_sec": mean("process_cpu_system_sec"),
+        "process_max_rss_bytes": mean("process_max_rss_bytes"),
+        "process_major_page_faults": mean("process_major_page_faults"),
+        "process_minor_page_faults": mean("process_minor_page_faults"),
+        "process_fs_inputs": mean("process_fs_inputs"),
+        "process_fs_outputs": mean("process_fs_outputs"),
+        "process_max_rss_bytes_peak": max(max_rss_values) if max_rss_values else "",
+        "process_metrics_backend": ",".join(backends) if backends else "unavailable",
         "process_cpu_user_sec_total": total("process_cpu_user_sec"),
         "process_cpu_kernel_sec_total": total("process_cpu_kernel_sec"),
-        "process_cpu_total_sec_total": sum(cpu_totals),
+        "process_cpu_total_sec_total": sum(cpu_totals) if cpu_totals else "",
         "process_cpu_total_sec_mean": statistics.mean(cpu_totals) if cpu_totals else "",
         "process_peak_working_set_bytes_max": max(peak_working_sets) if peak_working_sets else "",
         "process_peak_private_bytes_max": max(peak_private_bytes) if peak_private_bytes else "",
@@ -1794,6 +2145,7 @@ def run_program(
     timeout: int,
     dataset: str,
     measurement_seconds: float,
+    min_measured_runs: int,
 ) -> tuple[
     list[dict[str, object]],
     dict[str, object],
@@ -1845,7 +2197,10 @@ def run_program(
     while True:
         elapsed_window = time.perf_counter() - measurement_start
         if measurement_seconds > 0:
-            if measured_run_count > 0 and elapsed_window >= measurement_seconds:
+            if (
+                measured_run_count >= min_measured_runs
+                and elapsed_window >= measurement_seconds
+            ):
                 break
         elif measured_run_count >= runs:
             break
@@ -1857,7 +2212,12 @@ def run_program(
     measured_records = [record for record in records if record["phase"] == "measure"]
     summary = {
         **summarize(measured),
-        **summarize_process_records(measured_records, measurement_seconds, actual_seconds),
+        **summarize_process_records(
+            measured_records,
+            measurement_seconds,
+            actual_seconds,
+            min_measured_runs,
+        ),
     }
     return (
         records,
@@ -1933,10 +2293,14 @@ def environment_manifest(
         "opt_level": args.opt_level,
         "warmup_runs": args.warmup,
         "measurement_seconds": args.measurement_seconds,
+        "min_measured_runs": args.min_measured_runs,
         "fixed_measured_runs": args.runs,
         "timeout_sec": args.timeout,
         "polybench_profiles": args.polybench_profile or list(POLYBENCH_DATASET_PROFILES),
         "prometheus_url": args.prometheus_url,
+        "prometheus_exporter": args.prometheus_exporter,
+        "prometheus_job": args.prometheus_job,
+        "prometheus_instance": args.prometheus_instance,
         "prometheus_query_step_sec": args.prometheus_query_step,
     }
 
@@ -1992,7 +2356,12 @@ def process_program(
 
     run_records: list[dict[str, object]] = []
     runtime_summary = summarize([])
-    measurement_summary = summarize_process_records([], args.measurement_seconds, 0.0)
+    measurement_summary = summarize_process_records(
+        [],
+        args.measurement_seconds,
+        0.0,
+        args.min_measured_runs,
+    )
     measurement_window: tuple[float, float] | None = None
     run_success = False
     run_error = ""
@@ -2004,6 +2373,7 @@ def process_program(
             args.timeout,
             args.dataset,
             args.measurement_seconds,
+            args.min_measured_runs,
         )
         measurement_summary = {
             field: runtime_summary.get(field, "")
@@ -2078,7 +2448,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset", default="test", help="Dataset label written to CSV.")
     parser.add_argument("--task-type", default="mixed_test", help="Task type label written to CSV.")
     parser.add_argument("--parallel-model", default="serial", help="Parallel model label written to CSV.")
-    parser.add_argument("--env-id", default="local_windows", help="Environment id written to CSV.")
+    parser.add_argument(
+        "--env-id",
+        default=None,
+        help="Environment id written to CSV. Defaults to hostname-architecture.",
+    )
     parser.add_argument("--input-id", default="default", help="Input id written to CSV.")
     parser.add_argument("--compile-config-id", default="release_O2", help="Compile config id written to CSV.")
     parser.add_argument("--opt-level", default="O2", choices=["O0", "O1", "O2", "O3"], help="Compiler optimization level.")
@@ -2099,6 +2473,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=10.0,
         help="Measured execution time budget per program. Defaults to 10 seconds.",
     )
+    parser.add_argument(
+        "--min-measured-runs",
+        type=int,
+        default=3,
+        help="Minimum measured runs even when the time budget has already been reached.",
+    )
     parser.add_argument("--timeout", type=int, default=30, help="Per-run timeout in seconds.")
     parser.add_argument("--extra-flag", action="append", help="Extra compiler flag. Can be repeated.")
     parser.add_argument(
@@ -2115,13 +2495,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prometheus-address", default="127.0.0.1", help="Address used by the Prometheus metrics HTTP server.")
     parser.add_argument("--prometheus-port", type=int, default=8000, help="Port used by the Prometheus metrics HTTP server.")
     parser.add_argument("--prometheus-url", default="http://127.0.0.1:9090", help="Prometheus HTTP API base URL.")
+    parser.add_argument(
+        "--prometheus-exporter",
+        choices=("auto", "windows", "node", "off"),
+        default="auto",
+        help=(
+            "Host exporter queried through Prometheus. 'auto' selects Windows Exporter "
+            "on Windows and Node Exporter on Linux; 'off' disables host queries."
+        ),
+    )
+    parser.add_argument(
+        "--prometheus-job",
+        default=None,
+        help="Prometheus job label. Defaults to 'windows' or 'node' for the selected exporter.",
+    )
+    parser.add_argument(
+        "--prometheus-instance",
+        default="",
+        help="Optional Prometheus instance label used to select one monitored host.",
+    )
     parser.add_argument("--prometheus-query-step", type=float, default=1.0, help="Prometheus query_range step in seconds.")
     parser.add_argument("--prometheus-query-timeout", type=float, default=10.0, help="Timeout for one Prometheus API request.")
     parser.add_argument(
         "--prometheus-query-delay",
         type=float,
         default=2.0,
-        help="Seconds to wait for the final Windows Exporter scrape before querying Prometheus.",
+        help="Seconds to wait for the final host-exporter scrape before querying Prometheus.",
     )
     parser.add_argument(
         "--prometheus-final-wait",
@@ -2133,7 +2532,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_arg_parser().parse_args(argv)
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    if args.warmup < 0:
+        parser.error("--warmup must be >= 0")
+    if args.runs < 1 or args.min_measured_runs < 1:
+        parser.error("--runs and --min-measured-runs must be >= 1")
+    if args.measurement_seconds < 0:
+        parser.error("--measurement-seconds must be >= 0")
+    if args.timeout <= 0:
+        parser.error("--timeout must be > 0")
+    if args.prometheus_query_delay < 0 or args.prometheus_final_wait < 0:
+        parser.error("Prometheus wait values must be >= 0")
+    if args.prometheus_query_step <= 0 or args.prometheus_query_timeout <= 0:
+        parser.error("Prometheus query step and timeout must be > 0")
+
+    args.env_id = args.env_id or default_env_id()
+    args.prometheus_exporter = resolve_prometheus_exporter(args.prometheus_exporter)
+    if args.prometheus_job is None:
+        args.prometheus_job = {
+            "windows": "windows",
+            "node": "node",
+        }.get(args.prometheus_exporter, "")
+    host_metric_queries = prometheus_host_queries(
+        args.prometheus_exporter,
+        args.prometheus_job,
+        args.prometheus_instance,
+    )
+
     ensure_dirs()
     static_environment = collect_static_environment()
     source_dir = Path(args.source_dir).resolve()
@@ -2164,11 +2590,29 @@ def main(argv: list[str] | None = None) -> int:
             f"{len(programs)} input configurations"
         )
 
+    if os.name == "posix" and not args.no_run:
+        try:
+            process_probe = ensure_process_probe()
+        except RuntimeError as exc:
+            print(f"[pipeline] cannot initialize Linux process metrics: {exc}", file=sys.stderr)
+            return 1
+        print(f"[pipeline] process metrics probe: {process_probe}")
+
     start_http_server(args.prometheus_port, addr=args.prometheus_address)
     print(
         f"[prometheus] metrics available at "
         f"http://{args.prometheus_address}:{args.prometheus_port}/metrics"
     )
+    if host_metric_queries:
+        selector_description = f"job={args.prometheus_job or '*'}"
+        if args.prometheus_instance:
+            selector_description += f", instance={args.prometheus_instance}"
+        print(
+            f"[prometheus] host queries use {args.prometheus_exporter} exporter "
+            f"({selector_description})"
+        )
+    else:
+        print("[prometheus] host metric queries disabled")
     metric_labels = {"dataset": args.dataset}
     PIPELINE_RUNNING.labels(**metric_labels).set(1)
     PIPELINE_PROGRAMS_TOTAL.labels(**metric_labels).set(len(programs))
@@ -2181,7 +2625,7 @@ def main(argv: list[str] | None = None) -> int:
         static_rows: list[dict[str, object]] = []
         run_rows: list[dict[str, object]] = []
         summary_rows: list[dict[str, object]] = []
-        prometheus_windows: list[tuple[dict[str, object], float, float]] = []
+        prometheus_measurement_windows: list[tuple[dict[str, object], float, float]] = []
         for completed, program in enumerate(programs, start=1):
             profile_suffix = f" [{program.input_profile}]" if program.input_profile else ""
             print(f"[pipeline] processing {program.program_id}{profile_suffix}")
@@ -2195,7 +2639,15 @@ def main(argv: list[str] | None = None) -> int:
             run_rows.extend(program_run_rows)
             summary_rows.append(summary_row)
             if measurement_window is not None:
-                prometheus_windows.append((summary_row, *measurement_window))
+                if host_metric_queries:
+                    prometheus_measurement_windows.append((summary_row, *measurement_window))
+                else:
+                    summary_row.update(
+                        empty_prometheus_result(
+                            *measurement_window,
+                            "Prometheus host metric collection is disabled",
+                        )
+                    )
             else:
                 summary_row.update(
                     empty_prometheus_result(
@@ -2221,14 +2673,18 @@ def main(argv: list[str] | None = None) -> int:
             PIPELINE_PROGRAMS_COMPLETED.labels(**metric_labels).set(completed)
             PIPELINE_PROGRESS_RATIO.labels(**metric_labels).set(completed / len(programs))
 
-        if args.prometheus_query_delay > 0:
+        if prometheus_measurement_windows and args.prometheus_query_delay > 0:
             print(
                 f"[prometheus] waiting {args.prometheus_query_delay:g} seconds "
                 "for the final host scrape"
             )
             time.sleep(args.prometheus_query_delay)
-        print(f"[prometheus] collecting host metrics for {len(prometheus_windows)} program windows")
-        for summary_row, start_timestamp, end_timestamp in prometheus_windows:
+        if prometheus_measurement_windows:
+            print(
+                "[prometheus] collecting host metrics for "
+                f"{len(prometheus_measurement_windows)} program windows"
+            )
+        for summary_row, start_timestamp, end_timestamp in prometheus_measurement_windows:
             try:
                 metrics = collect_prometheus_host_metrics(
                     args.prometheus_url,
@@ -2236,6 +2692,7 @@ def main(argv: list[str] | None = None) -> int:
                     end_timestamp,
                     max(args.prometheus_query_step, 0.1),
                     max(args.prometheus_query_timeout, 0.1),
+                    host_metric_queries,
                 )
             except Exception as exc:
                 metrics = empty_prometheus_result(

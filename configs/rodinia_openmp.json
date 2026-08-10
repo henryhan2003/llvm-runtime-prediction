@@ -291,14 +291,14 @@
         {
           "id": "matrix-256",
           "profile": "smoke",
-          "args": ["-s", "256"],
+          "args": ["-n", "2", "-s", "256"],
           "threads": 2,
           "parameters": {"matrix_dimension": 256, "threads": 2}
         },
         {
           "id": "matrix-8000",
           "profile": "official",
-          "args": ["-s", "8000"],
+          "args": ["-n", "4", "-s", "8000"],
           "threads": 4,
           "parameters": {"matrix_dimension": 8000, "threads": 4}
         }
