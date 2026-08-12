@@ -72,6 +72,16 @@ class RodiniaManifestTests(unittest.TestCase):
         kmeans = next(item for item in self.benchmarks if item.benchmark_id == "kmeans")
         self.assertNotIn("kmeans_openmp/getopt.c", kmeans.sources)
 
+    def test_cpp_benchmarks_use_system_gcc_toolchain(self) -> None:
+        cfd = next(item for item in self.benchmarks if item.benchmark_id == "cfd")
+        streamcluster = next(
+            item for item in self.benchmarks if item.benchmark_id == "streamcluster"
+        )
+
+        self.assertIn("CXX=g++", cfd.build_commands[0])
+        self.assertIn("--gcc-toolchain=/usr", cfd.static_flags)
+        self.assertIn("--gcc-toolchain=/usr", streamcluster.static_flags)
+
     def test_textually_included_c_files_are_owned_by_the_ast_extractor(self) -> None:
         expected = {
             "heartwall": {"define.c", "kernel.c"},

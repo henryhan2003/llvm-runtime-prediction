@@ -87,11 +87,11 @@
       "id": "cfd",
       "workdir": "cfd",
       "executable": "euler3d_cpu",
-      "build": [["make", "euler3d_cpu", "OMP_NUM_THREADS=4"]],
+      "build": [["make", "euler3d_cpu", "OMP_NUM_THREADS=4", "CXX=g++"]],
       "clean": [["make", "clean"]],
       "sources": ["euler3d_cpu.cpp"],
       "include_dirs": ["."],
-      "static_flags": ["-fopenmp", "-Dblock_length=4"],
+      "static_flags": ["-fopenmp", "-Dblock_length=4", "--gcc-toolchain=/usr"],
       "inputs": [
         {
           "id": "fvcorr-097k",
@@ -510,7 +510,7 @@
       "clean": [["make", "clean"]],
       "sources": ["streamcluster_omp.cpp"],
       "include_dirs": ["."],
-      "static_flags": ["-fopenmp"],
+      "static_flags": ["-fopenmp", "--gcc-toolchain=/usr"],
       "inputs": [
         {
           "id": "synthetic-1024",
