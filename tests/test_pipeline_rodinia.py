@@ -270,10 +270,78 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(3, summary["measured_runs"])
         self.assertEqual(18, summary["measurement_seconds_actual"])
 
+    def test_measurement_records_before_during_after_windows(self) -> None:
+        benchmark = pipeline.BenchmarkSpec(
+            benchmark_id="toy",
+            workdir="toy",
+            executable="toy",
+            build_commands=(),
+            clean_commands=(),
+            sources=(),
+            ast_owned_sources=(),
+            include_dirs=(),
+            static_flags=(),
+            required_files=(),
+            environment={},
+            inputs=(),
+            enabled=True,
+            disabled_reason="",
+        )
+        input_spec = pipeline.InputSpec(
+            input_id="small",
+            profile="smoke",
+            args=(),
+            threads=1,
+            parameters={},
+            required_files=(),
+            environment={},
+        )
+        result = pipeline.ProcessResult(
+            command=["toy"],
+            returncode=0,
+            elapsed_sec=1.0,
+            timed_out=False,
+            error_message="",
+            metrics={"process_metrics_backend": "test"},
+        )
+        windows: dict[str, tuple[float, float]] = {}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "toy").mkdir()
+            with mock.patch.object(pipeline, "run_process", return_value=result), mock.patch.object(
+                pipeline.time, "time", side_effect=[10.0, 15.0, 15.0, 25.0, 25.0, 30.0]
+            ), mock.patch.object(pipeline.time, "sleep") as sleeping:
+                pipeline.measure_input(
+                    "session",
+                    benchmark,
+                    input_spec,
+                    root,
+                    warmup=0,
+                    runs=1,
+                    measurement_seconds=0,
+                    min_measured_runs=1,
+                    timeout=30,
+                    phase_windows=windows,
+                    prometheus_context_seconds=5,
+                )
+        self.assertEqual(
+            {"before": (10.0, 15.0), "during": (15.0, 25.0), "after": (25.0, 30.0)},
+            windows,
+        )
+        self.assertEqual([mock.call(5), mock.call(5)], sleeping.call_args_list)
+
     def test_new_safety_defaults_are_enabled(self) -> None:
         args = pipeline.parse_args(["--benchmark", "pathfinder"])
         self.assertEqual(3, args.min_measured_runs)
         self.assertFalse(args.allow_oversubscription)
+        self.assertEqual("auto", args.prometheus_exporter)
+        self.assertEqual(5.0, args.prometheus_context_seconds)
+
+    def test_explicit_environment_id_is_available_to_rodinia(self) -> None:
+        args = pipeline.parse_args(
+            ["--benchmark", "pathfinder", "--env-id", "server_3970x_ubuntu20_clang14_gcc9"]
+        )
+        self.assertEqual("server_3970x_ubuntu20_clang14_gcc9", args.env_id)
 
     def test_dry_run_rejects_oversubscription_unless_explicitly_allowed(self) -> None:
         environment = {"cpu_logical_core_count": 2}

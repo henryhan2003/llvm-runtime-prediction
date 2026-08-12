@@ -38,6 +38,18 @@ DEFAULT_RESULTS_DIR = PROJECT_ROOT / "results"
 PROCESS_PROBE_SOURCE = SCRIPT_DIR / "rodinia_process_probe.c"
 PROCESS_PROBE_BINARY = PROJECT_ROOT / "build" / "rodinia_process_probe"
 _PROCESS_PROBE_PATH: Path | None = None
+_PIPELINE_CORE: Any | None = None
+
+
+def pipeline_core() -> Any:
+    global _PIPELINE_CORE
+    if _PIPELINE_CORE is None:
+        try:
+            import pipeline_new as core
+        except ImportError:
+            from scripts import pipeline_new as core
+        _PIPELINE_CORE = core
+    return _PIPELINE_CORE
 
 AST_FIELDS = [
     "ast_node_count",
@@ -124,7 +136,9 @@ IR_FIELDS = [
 ]
 
 ENVIRONMENT_FIELDS = [
+    "environment_schema_version",
     "env_id",
+    "host_name",
     "os_system",
     "os_release",
     "os_version",
@@ -140,11 +154,28 @@ ENVIRONMENT_FIELDS = [
     "cpu_l1_cache_bytes",
     "cpu_l2_cache_bytes",
     "cpu_l3_cache_bytes",
+    "cpu_cache_legacy_scope",
+    "cpu_l1_cache_bytes_per_instance",
+    "cpu_l1_cache_instance_count",
+    "cpu_l1_cache_bytes_total",
+    "cpu_l1d_cache_bytes_per_instance",
+    "cpu_l1d_cache_instance_count",
+    "cpu_l1d_cache_bytes_total",
+    "cpu_l1i_cache_bytes_per_instance",
+    "cpu_l1i_cache_instance_count",
+    "cpu_l1i_cache_bytes_total",
+    "cpu_l2_cache_bytes_per_instance",
+    "cpu_l2_cache_instance_count",
+    "cpu_l2_cache_bytes_total",
+    "cpu_l3_cache_bytes_per_instance",
+    "cpu_l3_cache_instance_count",
+    "cpu_l3_cache_bytes_total",
     "memory_total_bytes",
     "representation_compiler",
     "representation_compiler_version",
     "runtime_compiler",
     "runtime_compiler_version",
+    "opt_version",
 ]
 
 PROCESS_FIELDS = [
@@ -194,6 +225,7 @@ SUMMARY_FIELDS = [
     *PROCESS_FIELDS,
     "process_max_rss_bytes_peak",
     "process_metrics_backend",
+    *pipeline_core().PROMETHEUS_RESULT_FIELDS,
     *ENVIRONMENT_FIELDS,
     "static_status",
     "static_source_count",
@@ -709,11 +741,11 @@ def _compiler_version(command: str) -> str:
     return (result.stdout or result.stderr).strip().splitlines()[0]
 
 
-def _cpu_cache_sizes() -> dict[int, int]:
+def _cpu_cache_sizes() -> tuple[dict[int, int], dict[str, Any]]:
     sizes: dict[int, int] = {}
     cache_root = Path("/sys/devices/system/cpu/cpu0/cache")
     if not cache_root.exists():
-        return sizes
+        return sizes, pipeline_core().linux_cpu_cache_topology()
     for index_dir in cache_root.glob("index*"):
         try:
             level = int((index_dir / "level").read_text().strip())
@@ -721,10 +753,14 @@ def _cpu_cache_sizes() -> dict[int, int]:
         except (OSError, ValueError):
             continue
         sizes[level] = sizes.get(level, 0) + size
-    return sizes
+    return sizes, pipeline_core().linux_cpu_cache_topology()
 
 
-def collect_environment(c_compiler: str, cxx_compiler: str) -> dict[str, Any]:
+def collect_environment(
+    c_compiler: str,
+    cxx_compiler: str,
+    env_id: str | None = None,
+) -> dict[str, Any]:
     cpu_records: list[dict[str, str]] = []
     cpuinfo = Path("/proc/cpuinfo")
     if cpuinfo.exists():
@@ -761,13 +797,15 @@ def collect_environment(c_compiler: str, cxx_compiler: str) -> dict[str, Any]:
         )
         if match:
             memory_total = int(match.group(1)) * 1024
-    caches = _cpu_cache_sizes()
+    caches, cache_topology = _cpu_cache_sizes()
     c_version = _compiler_version(c_compiler)
     cxx_version = _compiler_version(cxx_compiler)
     node = platform.node() or "unknown-host"
     architecture = platform.machine()
     return {
-        "env_id": f"{node}-{architecture}",
+        "environment_schema_version": 2,
+        "env_id": env_id or pipeline_core().default_env_id(),
+        "host_name": node,
         "os_system": platform.system(),
         "os_release": platform.release(),
         "os_version": platform.version(),
@@ -783,11 +821,13 @@ def collect_environment(c_compiler: str, cxx_compiler: str) -> dict[str, Any]:
         "cpu_l1_cache_bytes": caches.get(1, 0),
         "cpu_l2_cache_bytes": caches.get(2, 0),
         "cpu_l3_cache_bytes": caches.get(3, 0),
+        **cache_topology,
         "memory_total_bytes": memory_total,
         "representation_compiler": f"{c_compiler} / {cxx_compiler}",
         "representation_compiler_version": f"{c_version} | {cxx_version}",
         "runtime_compiler": "gcc / g++ (Rodinia Makefiles)",
         "runtime_compiler_version": f"{_compiler_version('gcc')} | {_compiler_version('g++')}",
+        "opt_version": pipeline_core().llvm_opt_version(),
     }
 
 
@@ -1132,6 +1172,8 @@ def measure_input(
     measurement_seconds: float,
     min_measured_runs: int,
     timeout: float,
+    phase_windows: dict[str, tuple[float, float]] | None = None,
+    prometheus_context_seconds: float = 0.0,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     workdir = openmp_root / spec.workdir
     executable = (workdir / spec.executable).resolve()
@@ -1174,6 +1216,11 @@ def measure_input(
 
     measured_runtime_total = 0.0
     if warmup_completed == warmup:
+        before_start = time.time()
+        if prometheus_context_seconds > 0:
+            time.sleep(prometheus_context_seconds)
+        before_end = time.time()
+        during_start = time.time()
         index = 1
         while True:
             if measurement_seconds > 0:
@@ -1191,6 +1238,19 @@ def measure_input(
             measured_results.append(result)
             measured_runtime_total += result.elapsed_sec
             index += 1
+        during_end = time.time()
+        after_start = time.time()
+        if prometheus_context_seconds > 0:
+            time.sleep(prometheus_context_seconds)
+        after_end = time.time()
+        if phase_windows is not None:
+            phase_windows.update(
+                {
+                    "before": (before_start, before_end),
+                    "during": (during_start, during_end),
+                    "after": (after_start, after_end),
+                }
+            )
 
     runtimes = [result.elapsed_sec for result in measured_results]
     mean = statistics.fmean(runtimes) if runtimes else 0.0
@@ -1276,6 +1336,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--rodinia-root", type=Path, default=DEFAULT_RODINIA_ROOT)
     parser.add_argument("--results-dir", type=Path, default=DEFAULT_RESULTS_DIR)
+    parser.add_argument(
+        "--env-id",
+        default=None,
+        help=(
+            "Environment id written to CSV. Defaults to LLVM_RUNTIME_ENV_ID when set, "
+            "otherwise hostname-architecture. Pass the same value to every dataset pipeline."
+        ),
+    )
     parser.add_argument("--benchmark", action="append", default=[], help="Benchmark id; repeat or use commas.")
     parser.add_argument("--all", action="store_true", help="Run every enabled benchmark.")
     parser.add_argument("--list", action="store_true", help="List the manifest and exit.")
@@ -1303,6 +1371,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--c-compiler", default="clang")
     parser.add_argument("--cxx-compiler", default="clang++")
     parser.add_argument("--opt-level", choices=("O0", "O1", "O2", "O3"), default="O2")
+    parser.add_argument("--prometheus-url", default="http://127.0.0.1:9090")
+    parser.add_argument(
+        "--prometheus-exporter",
+        choices=("auto", "node", "off"),
+        default="auto",
+        help="Linux host exporter queried through Prometheus; auto selects node.",
+    )
+    parser.add_argument("--prometheus-job", default=None)
+    parser.add_argument("--prometheus-instance", default="")
+    parser.add_argument("--prometheus-query-step", type=float, default=1.0)
+    parser.add_argument("--prometheus-query-timeout", type=float, default=10.0)
+    parser.add_argument("--prometheus-query-delay", type=float, default=2.0)
+    parser.add_argument(
+        "--prometheus-context-seconds",
+        type=float,
+        default=5.0,
+        help="Quiet host-observation duration before and after each measured benchmark window.",
+    )
     static_group = parser.add_mutually_exclusive_group()
     static_group.add_argument("--collect-static", dest="collect_static", action="store_true")
     static_group.add_argument("--no-static", dest="collect_static", action="store_false")
@@ -1320,6 +1406,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
     if args.timeout <= 0 or args.build_timeout <= 0:
         parser.error("timeouts must be positive")
+    if (
+        args.prometheus_query_step <= 0
+        or args.prometheus_query_timeout <= 0
+        or args.prometheus_query_delay < 0
+        or args.prometheus_context_seconds < 0
+    ):
+        parser.error("Prometheus step/timeout must be positive and wait values must be >= 0")
     if args.all and args.benchmark:
         parser.error("use either --all or --benchmark, not both")
     return args
@@ -1363,7 +1456,17 @@ def main(argv: list[str] | None = None) -> int:
 
     session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     collected_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    args.env_id = args.env_id or pipeline_core().default_env_id()
+    args.prometheus_exporter = "node" if args.prometheus_exporter == "auto" else args.prometheus_exporter
+    if args.prometheus_job is None:
+        args.prometheus_job = "node" if args.prometheus_exporter == "node" else ""
+    host_metric_queries = pipeline_core().prometheus_host_queries(
+        args.prometheus_exporter,
+        args.prometheus_job,
+        args.prometheus_instance,
+    )
     environment_features = collect_environment(args.c_compiler, args.cxx_compiler)
+    environment_features["env_id"] = args.env_id
     available_logical_cores = int(environment_features["cpu_logical_core_count"])
     summary_rows: list[dict[str, Any]] = []
     run_rows: list[dict[str, Any]] = []
@@ -1465,6 +1568,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"[run] {spec.benchmark_id}[{item.input_id}] "
                     f"warmup={args.warmup}, budget={args.measurement_seconds:g}s"
                 )
+                phase_windows: dict[str, tuple[float, float]] = {}
                 measured, detail_rows, run_errors = measure_input(
                     session_id,
                     spec,
@@ -1475,10 +1579,44 @@ def main(argv: list[str] | None = None) -> int:
                     args.measurement_seconds,
                     args.min_measured_runs,
                     args.timeout,
+                    phase_windows,
+                    args.prometheus_context_seconds if host_metric_queries else 0.0,
                 )
                 base_row.update(measured)
                 run_rows.extend(detail_rows)
                 errors.extend(run_errors)
+                if host_metric_queries and phase_windows:
+                    if args.prometheus_query_delay > 0:
+                        time.sleep(args.prometheus_query_delay)
+                    try:
+                        base_row.update(
+                            pipeline_core().collect_prometheus_three_phase_metrics(
+                                args.prometheus_url,
+                                phase_windows,
+                                args.prometheus_query_step,
+                                args.prometheus_query_timeout,
+                                host_metric_queries,
+                                args.prometheus_context_seconds,
+                            )
+                        )
+                    except Exception as exc:
+                        message = str(exc)[:500]
+                        base_row.update(
+                            pipeline_core().empty_prometheus_three_phase_result(
+                                phase_windows,
+                                message,
+                                args.prometheus_context_seconds,
+                            )
+                        )
+                        errors.append(f"PROMETHEUS: {message}")
+                else:
+                    base_row.update(
+                        pipeline_core().empty_prometheus_three_phase_result(
+                            phase_windows or None,
+                            "Prometheus host metric collection is disabled",
+                            args.prometheus_context_seconds,
+                        )
+                    )
             else:
                 base_row.update(
                     {
@@ -1497,6 +1635,13 @@ def main(argv: list[str] | None = None) -> int:
                         "process_metrics_backend": "not_run",
                         "run_success": "not_run" if args.build_only and build_success else False,
                     }
+                )
+                base_row.update(
+                    pipeline_core().empty_prometheus_three_phase_result(
+                        None,
+                        "Benchmark measurement was not executed",
+                        args.prometheus_context_seconds,
+                    )
                 )
             base_row["error_message"] = " | ".join(error for error in errors if error)[-12000:]
             summary_rows.append(base_row)

@@ -6,6 +6,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -155,6 +156,81 @@ class AstOwnershipTests(unittest.TestCase):
         self.assertEqual(3, features["function_count"])
         self.assertNotIn("system_fn", owned_text)
         self.assertIn("included_helper", owned_text)
+
+
+class EnvironmentMetadataTests(unittest.TestCase):
+    def test_llvm_opt_version_selects_the_version_line(self) -> None:
+        output = "LLVM (http://llvm.org/):\n  LLVM version 14.0.6\n  Optimized build."
+        with mock.patch.object(pipeline.shutil, "which", return_value="/usr/bin/opt"), mock.patch.object(
+            pipeline, "command_output", return_value=output
+        ):
+            self.assertEqual("14.0.6", pipeline.llvm_opt_version())
+
+    def test_linux_cache_topology_deduplicates_shared_instances(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def cache(cpu: int, index: int, level: int, kind: str, size: str, shared: str) -> None:
+                directory = root / f"cpu{cpu}" / "cache" / f"index{index}"
+                directory.mkdir(parents=True)
+                (directory / "level").write_text(str(level), encoding="ascii")
+                (directory / "type").write_text(kind, encoding="ascii")
+                (directory / "size").write_text(size, encoding="ascii")
+                (directory / "shared_cpu_list").write_text(shared, encoding="ascii")
+
+            for cpu in (0, 1):
+                cache(cpu, 0, 1, "Data", "32K", str(cpu))
+                cache(cpu, 1, 1, "Instruction", "32K", str(cpu))
+                cache(cpu, 2, 2, "Unified", "512K", str(cpu))
+                cache(cpu, 3, 3, "Unified", "16M", "0-1")
+            topology = pipeline.linux_cpu_cache_topology(root)
+
+        self.assertEqual(2, topology["cpu_l1d_cache_instance_count"])
+        self.assertEqual(64 * 1024, topology["cpu_l1d_cache_bytes_total"])
+        self.assertEqual(1, topology["cpu_l3_cache_instance_count"])
+        self.assertEqual(16 * 1024 * 1024, topology["cpu_l3_cache_bytes_total"])
+
+
+class PrometheusPhaseTests(unittest.TestCase):
+    @staticmethod
+    def result(
+        start: float,
+        end: float,
+        cpu: float,
+        memory: float,
+        disk_read: float,
+        disk_write: float,
+        network: float,
+    ) -> dict[str, object]:
+        return {
+            "prometheus_window_start_timestamp": start,
+            "prometheus_window_end_timestamp": end,
+            "prometheus_window_duration_seconds": end - start,
+            "prometheus_sample_count": 5,
+            "host_cpu_usage_pct_mean": cpu,
+            "host_cpu_usage_pct_max": cpu + 2,
+            "host_memory_used_bytes_mean": memory,
+            "host_memory_used_bytes_max": memory + 10,
+            "host_disk_read_bytes_delta": disk_read,
+            "host_disk_write_bytes_delta": disk_write,
+            "host_network_bytes_delta": network,
+            "prometheus_collection_success": True,
+            "prometheus_collection_error": "",
+        }
+
+    def test_three_phase_summary_subtracts_interpolated_background(self) -> None:
+        phases = {
+            "before": self.result(0, 5, 10, 1000, 50, 100, 150),
+            "during": self.result(5, 15, 30, 1600, 500, 700, 900),
+            "after": self.result(15, 20, 14, 1200, 100, 150, 200),
+        }
+        summary = pipeline.summarize_prometheus_phases(phases, 5)
+        self.assertEqual(12, summary["prometheus_background_cpu_usage_pct_mean"])
+        self.assertEqual(18, summary["host_cpu_usage_pct_background_adjusted_mean"])
+        self.assertEqual(1100, summary["prometheus_background_memory_used_bytes_mean"])
+        self.assertEqual(500, summary["host_memory_used_bytes_background_adjusted_mean"])
+        self.assertEqual(350, summary["host_disk_read_bytes_background_adjusted_delta"])
+        self.assertTrue(summary["prometheus_three_phase_collection_success"])
 
 
 if __name__ == "__main__":

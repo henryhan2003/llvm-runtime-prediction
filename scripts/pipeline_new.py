@@ -113,7 +113,7 @@ PIPELINE_LAST_RUN_SUCCESS = Gauge(
     ["dataset"],
 )
 
-PROMETHEUS_RESULT_FIELDS = [
+LEGACY_PROMETHEUS_RESULT_FIELDS = [
     "prometheus_window_start_timestamp",
     "prometheus_window_end_timestamp",
     "prometheus_window_duration_seconds",
@@ -127,6 +127,56 @@ PROMETHEUS_RESULT_FIELDS = [
     "host_network_bytes_delta",
     "prometheus_collection_success",
     "prometheus_collection_error",
+]
+
+PROMETHEUS_PHASES = ("before", "during", "after")
+PROMETHEUS_PHASE_FIELDS = [
+    field
+    for phase in PROMETHEUS_PHASES
+    for field in (
+        f"prometheus_{phase}_window_start_timestamp",
+        f"prometheus_{phase}_window_end_timestamp",
+        f"prometheus_{phase}_window_duration_seconds",
+        f"prometheus_{phase}_sample_count",
+        f"host_cpu_usage_pct_{phase}_mean",
+        f"host_cpu_usage_pct_{phase}_max",
+        f"host_memory_used_bytes_{phase}_mean",
+        f"host_memory_used_bytes_{phase}_max",
+        f"host_disk_read_bytes_{phase}_delta",
+        f"host_disk_write_bytes_{phase}_delta",
+        f"host_network_bytes_{phase}_delta",
+        f"prometheus_{phase}_collection_success",
+        f"prometheus_{phase}_collection_error",
+    )
+]
+PROMETHEUS_BACKGROUND_FIELDS = [
+    "prometheus_sampling_scheme",
+    "prometheus_context_seconds_requested",
+    "prometheus_background_correction_method",
+    "prometheus_background_cpu_usage_pct_mean",
+    "prometheus_background_memory_used_bytes_mean",
+    "prometheus_background_disk_read_bytes_per_sec",
+    "prometheus_background_disk_write_bytes_per_sec",
+    "prometheus_background_network_bytes_per_sec",
+    "prometheus_background_cpu_before_after_abs_diff_pct",
+    "prometheus_background_memory_before_after_abs_diff_bytes",
+    "prometheus_background_disk_read_rate_abs_diff_bytes_per_sec",
+    "prometheus_background_disk_write_rate_abs_diff_bytes_per_sec",
+    "prometheus_background_network_rate_abs_diff_bytes_per_sec",
+    "host_cpu_usage_pct_background_adjusted_mean",
+    "host_cpu_usage_pct_background_adjusted_max",
+    "host_memory_used_bytes_background_adjusted_mean",
+    "host_memory_used_bytes_background_adjusted_max",
+    "host_disk_read_bytes_background_adjusted_delta",
+    "host_disk_write_bytes_background_adjusted_delta",
+    "host_network_bytes_background_adjusted_delta",
+    "prometheus_three_phase_collection_success",
+    "prometheus_three_phase_collection_error",
+]
+PROMETHEUS_RESULT_FIELDS = [
+    *LEGACY_PROMETHEUS_RESULT_FIELDS,
+    *PROMETHEUS_PHASE_FIELDS,
+    *PROMETHEUS_BACKGROUND_FIELDS,
 ]
 
 PROMETHEUS_HOST_QUERY_TEMPLATES = {
@@ -208,7 +258,9 @@ MEASUREMENT_SUMMARY_FIELDS = [
 ]
 
 STATIC_ENVIRONMENT_FIELDS = [
+    "environment_schema_version",
     "env_id",
+    "host_name",
     "os_system",
     "os_release",
     "os_version",
@@ -224,11 +276,28 @@ STATIC_ENVIRONMENT_FIELDS = [
     "cpu_l1_cache_bytes",
     "cpu_l2_cache_bytes",
     "cpu_l3_cache_bytes",
+    "cpu_cache_legacy_scope",
+    "cpu_l1_cache_bytes_per_instance",
+    "cpu_l1_cache_instance_count",
+    "cpu_l1_cache_bytes_total",
+    "cpu_l1d_cache_bytes_per_instance",
+    "cpu_l1d_cache_instance_count",
+    "cpu_l1d_cache_bytes_total",
+    "cpu_l1i_cache_bytes_per_instance",
+    "cpu_l1i_cache_instance_count",
+    "cpu_l1i_cache_bytes_total",
+    "cpu_l2_cache_bytes_per_instance",
+    "cpu_l2_cache_instance_count",
+    "cpu_l2_cache_bytes_total",
+    "cpu_l3_cache_bytes_per_instance",
+    "cpu_l3_cache_instance_count",
+    "cpu_l3_cache_bytes_total",
     "memory_total_bytes",
     "representation_compiler",
     "representation_compiler_version",
     "runtime_compiler",
     "runtime_compiler_version",
+    "opt_version",
 ]
 
 
@@ -388,12 +457,24 @@ def run_command(
 
 
 def command_text(cmd: list[str]) -> str:
+    text = command_output(cmd)
+    return text.splitlines()[0] if text and not text.startswith("unavailable:") else text
+
+
+def command_output(cmd: list[str]) -> str:
     try:
         result = run_command(cmd, timeout=10)
     except Exception as exc:
         return f"unavailable: {exc}"
-    text = (result.stdout or result.stderr or "").strip()
-    return text.splitlines()[0] if text else "unavailable"
+    return (result.stdout or result.stderr or "").strip() or "unavailable"
+
+
+def llvm_opt_version() -> str:
+    if not shutil.which("opt"):
+        return "unavailable"
+    output = command_output(["opt", "--version"])
+    match = re.search(r"\bLLVM version\s+([^\s]+)", output, re.IGNORECASE)
+    return match.group(1) if match else command_text(["opt", "--version"])
 
 
 _COMPILER_VERSION_CACHE: dict[str, str] = {}
@@ -436,6 +517,7 @@ def windows_cpu_topology() -> dict[str, object]:
         "cpu_l1_cache_bytes": "",
         "cpu_l2_cache_bytes": "",
         "cpu_l3_cache_bytes": "",
+        **_empty_cache_topology(),
     }
     if os.name != "nt":
         return empty
@@ -462,7 +544,7 @@ def windows_cpu_topology() -> dict[str, object]:
         offset = 0
         physical_cores = 0
         sockets = 0
-        cache_bytes = {1: 0, 2: 0, 3: 0}
+        cache_instances: dict[tuple[int, int], list[int]] = {}
         while offset + 8 <= len(raw):
             relationship = int.from_bytes(raw[offset : offset + 4], "little")
             record_size = int.from_bytes(raw[offset + 4 : offset + 8], "little")
@@ -473,18 +555,56 @@ def windows_cpu_topology() -> dict[str, object]:
             elif relationship == 2 and record_size >= 20:
                 cache_level = raw[offset + 8]
                 size = int.from_bytes(raw[offset + 12 : offset + 16], "little")
-                if cache_level in cache_bytes:
-                    cache_bytes[cache_level] += size
+                cache_type = int.from_bytes(raw[offset + 16 : offset + 20], "little")
+                if cache_level in (1, 2, 3):
+                    cache_instances.setdefault((cache_level, cache_type), []).append(size)
             elif relationship == 3:
                 sockets += 1
             offset += record_size
 
+        cache_bytes = {
+            level: sum(
+                size
+                for (instance_level, _), sizes in cache_instances.items()
+                if instance_level == level
+                for size in sizes
+            )
+            for level in (1, 2, 3)
+        }
+        cache_topology = _empty_cache_topology()
+
+        def write_group(prefix: str, values: list[int]) -> None:
+            cache_topology[f"{prefix}_bytes_per_instance"] = values[0] if values else ""
+            cache_topology[f"{prefix}_instance_count"] = len(values) if values else ""
+            cache_topology[f"{prefix}_bytes_total"] = sum(values) if values else ""
+
+        l1_data = cache_instances.get((1, 2), [])
+        l1_instruction = cache_instances.get((1, 1), [])
+        all_l1 = [
+            size
+            for (level, _), sizes in cache_instances.items()
+            if level == 1
+            for size in sizes
+        ]
+        write_group("cpu_l1_cache", all_l1)
+        write_group("cpu_l1d_cache", l1_data)
+        write_group("cpu_l1i_cache", l1_instruction)
+        write_group(
+            "cpu_l2_cache",
+            [size for (level, _), sizes in cache_instances.items() if level == 2 for size in sizes],
+        )
+        write_group(
+            "cpu_l3_cache",
+            [size for (level, _), sizes in cache_instances.items() if level == 3 for size in sizes],
+        )
+        cache_topology["cpu_cache_legacy_scope"] = "system_cache_total"
         return {
             "cpu_socket_count": sockets or "",
             "cpu_physical_core_count": physical_cores or "",
             "cpu_l1_cache_bytes": cache_bytes[1] or "",
             "cpu_l2_cache_bytes": cache_bytes[2] or "",
             "cpu_l3_cache_bytes": cache_bytes[3] or "",
+            **cache_topology,
         }
     except (AttributeError, OSError):
         return empty
@@ -496,6 +616,68 @@ def _parse_hardware_size(value: str) -> int:
         return 0
     scale = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
     return int(float(match.group(1)) * scale[match.group(2).upper()])
+
+
+def _empty_cache_topology() -> dict[str, object]:
+    fields = {
+        "cpu_cache_legacy_scope": "unavailable",
+        "cpu_l1_cache_bytes_per_instance": "",
+        "cpu_l1_cache_instance_count": "",
+        "cpu_l1_cache_bytes_total": "",
+        "cpu_l1d_cache_bytes_per_instance": "",
+        "cpu_l1d_cache_instance_count": "",
+        "cpu_l1d_cache_bytes_total": "",
+        "cpu_l1i_cache_bytes_per_instance": "",
+        "cpu_l1i_cache_instance_count": "",
+        "cpu_l1i_cache_bytes_total": "",
+        "cpu_l2_cache_bytes_per_instance": "",
+        "cpu_l2_cache_instance_count": "",
+        "cpu_l2_cache_bytes_total": "",
+        "cpu_l3_cache_bytes_per_instance": "",
+        "cpu_l3_cache_instance_count": "",
+        "cpu_l3_cache_bytes_total": "",
+    }
+    return fields
+
+
+def linux_cpu_cache_topology(
+    cpu_root: Path = Path("/sys/devices/system/cpu"),
+) -> dict[str, object]:
+    topology = _empty_cache_topology()
+    unique_instances: dict[tuple[int, str, str], int] = {}
+    for index_dir in cpu_root.glob("cpu[0-9]*/cache/index*"):
+        try:
+            level = int((index_dir / "level").read_text().strip())
+            cache_type = (index_dir / "type").read_text().strip().lower()
+            size = _parse_hardware_size((index_dir / "size").read_text().strip())
+            shared_cpu_list = (index_dir / "shared_cpu_list").read_text().strip()
+        except (OSError, ValueError):
+            continue
+        if level not in (1, 2, 3) or not size:
+            continue
+        key = (level, cache_type, shared_cpu_list or index_dir.parent.parent.name)
+        unique_instances[key] = size
+
+    groups: dict[tuple[int, str], list[int]] = {}
+    for (level, cache_type, _), size in unique_instances.items():
+        groups.setdefault((level, cache_type), []).append(size)
+
+    def write_group(prefix: str, values: list[int]) -> None:
+        topology[f"{prefix}_bytes_per_instance"] = values[0] if values else ""
+        topology[f"{prefix}_instance_count"] = len(values) if values else ""
+        topology[f"{prefix}_bytes_total"] = sum(values) if values else ""
+
+    l1_data = groups.get((1, "data"), [])
+    l1_instruction = groups.get((1, "instruction"), [])
+    l1_unified = groups.get((1, "unified"), [])
+    all_l1 = [*l1_data, *l1_instruction, *l1_unified]
+    write_group("cpu_l1_cache", all_l1)
+    write_group("cpu_l1d_cache", l1_data)
+    write_group("cpu_l1i_cache", l1_instruction)
+    write_group("cpu_l2_cache", [size for (level, _), values in groups.items() if level == 2 for size in values])
+    write_group("cpu_l3_cache", [size for (level, _), values in groups.items() if level == 3 for size in values])
+    topology["cpu_cache_legacy_scope"] = "cpu0_visible_cache_sum"
+    return topology
 
 
 def linux_cpu_info() -> dict[str, object]:
@@ -555,6 +737,7 @@ def linux_cpu_info() -> dict[str, object]:
         "cpu_l1_cache_bytes": cache_bytes.get(1, 0),
         "cpu_l2_cache_bytes": cache_bytes.get(2, 0),
         "cpu_l3_cache_bytes": cache_bytes.get(3, 0),
+        **linux_cpu_cache_topology(),
         "cpu_nominal_frequency_mhz": nominal_frequency,
     }
 
@@ -604,6 +787,7 @@ def collect_static_environment() -> dict[str, object]:
                 "cpu_l1_cache_bytes",
                 "cpu_l2_cache_bytes",
                 "cpu_l3_cache_bytes",
+                *_empty_cache_topology().keys(),
             )
         }
         logical_cores = processor_info.get("cpu_logical_core_count", os.cpu_count() or "")
@@ -612,6 +796,8 @@ def collect_static_environment() -> dict[str, object]:
     if isinstance(logical_cores, int) and isinstance(physical_cores, int) and physical_cores:
         threads_per_core = logical_cores / physical_cores
     return {
+        "environment_schema_version": 2,
+        "host_name": platform.node() or "unknown-host",
         "os_system": platform.system(),
         "os_release": platform.release(),
         "os_version": platform.version(),
@@ -628,7 +814,8 @@ def collect_static_environment() -> dict[str, object]:
 
 
 def default_env_id() -> str:
-    return f"{platform.node() or 'unknown-host'}-{platform.machine() or 'unknown-arch'}"
+    configured = os.environ.get("LLVM_RUNTIME_ENV_ID", "").strip()
+    return configured or f"{platform.node() or 'unknown-host'}-{platform.machine() or 'unknown-arch'}"
 
 
 def matches_any_pattern(relative_path: Path, patterns: Iterable[str]) -> bool:
@@ -1759,6 +1946,195 @@ def collect_prometheus_host_metrics(
     }
 
 
+def _phase_prometheus_result(
+    phase: str,
+    result: dict[str, object],
+) -> dict[str, object]:
+    return {
+        f"prometheus_{phase}_window_start_timestamp": result["prometheus_window_start_timestamp"],
+        f"prometheus_{phase}_window_end_timestamp": result["prometheus_window_end_timestamp"],
+        f"prometheus_{phase}_window_duration_seconds": result["prometheus_window_duration_seconds"],
+        f"prometheus_{phase}_sample_count": result["prometheus_sample_count"],
+        f"host_cpu_usage_pct_{phase}_mean": result["host_cpu_usage_pct_mean"],
+        f"host_cpu_usage_pct_{phase}_max": result["host_cpu_usage_pct_max"],
+        f"host_memory_used_bytes_{phase}_mean": result["host_memory_used_bytes_mean"],
+        f"host_memory_used_bytes_{phase}_max": result["host_memory_used_bytes_max"],
+        f"host_disk_read_bytes_{phase}_delta": result["host_disk_read_bytes_delta"],
+        f"host_disk_write_bytes_{phase}_delta": result["host_disk_write_bytes_delta"],
+        f"host_network_bytes_{phase}_delta": result["host_network_bytes_delta"],
+        f"prometheus_{phase}_collection_success": result["prometheus_collection_success"],
+        f"prometheus_{phase}_collection_error": result["prometheus_collection_error"],
+    }
+
+
+def _numeric_metric(result: dict[str, object], field: str) -> float | None:
+    value = result.get(field)
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        return float(value)
+    return None
+
+
+def summarize_prometheus_phases(
+    phase_results: dict[str, dict[str, object]],
+    context_seconds: float,
+) -> dict[str, object]:
+    before = phase_results["before"]
+    during = phase_results["during"]
+    after = phase_results["after"]
+    output = {
+        **during,
+        **_phase_prometheus_result("before", before),
+        **_phase_prometheus_result("during", during),
+        **_phase_prometheus_result("after", after),
+        "prometheus_sampling_scheme": "before_during_after_v1",
+        "prometheus_context_seconds_requested": context_seconds,
+        "prometheus_background_correction_method": (
+            "linear-background estimate: mean(before,after); counter deltas use "
+            "mean background rate multiplied by during duration; adjusted values clipped at zero"
+        ),
+    }
+
+    failures = [
+        f"{phase}: {phase_results[phase].get('prometheus_collection_error', '')}"
+        for phase in PROMETHEUS_PHASES
+        if phase_results[phase].get("prometheus_collection_success") is not True
+    ]
+    output["prometheus_three_phase_collection_success"] = not failures
+    output["prometheus_three_phase_collection_error"] = " | ".join(failures)
+
+    def background(field: str) -> tuple[float | None, float | None, float | None]:
+        before_value = _numeric_metric(before, field)
+        after_value = _numeric_metric(after, field)
+        if before_value is None or after_value is None:
+            return None, before_value, after_value
+        return (before_value + after_value) / 2.0, before_value, after_value
+
+    cpu_background, cpu_before, cpu_after = background("host_cpu_usage_pct_mean")
+    memory_background, memory_before, memory_after = background("host_memory_used_bytes_mean")
+    output["prometheus_background_cpu_usage_pct_mean"] = cpu_background if cpu_background is not None else ""
+    output["prometheus_background_memory_used_bytes_mean"] = memory_background if memory_background is not None else ""
+    output["prometheus_background_cpu_before_after_abs_diff_pct"] = (
+        abs(cpu_before - cpu_after) if cpu_before is not None and cpu_after is not None else ""
+    )
+    output["prometheus_background_memory_before_after_abs_diff_bytes"] = (
+        abs(memory_before - memory_after)
+        if memory_before is not None and memory_after is not None
+        else ""
+    )
+
+    during_cpu_mean = _numeric_metric(during, "host_cpu_usage_pct_mean")
+    during_memory_mean = _numeric_metric(during, "host_memory_used_bytes_mean")
+    output["host_cpu_usage_pct_background_adjusted_mean"] = (
+        max(0.0, during_cpu_mean - cpu_background)
+        if during_cpu_mean is not None and cpu_background is not None
+        else ""
+    )
+    output["host_memory_used_bytes_background_adjusted_mean"] = (
+        max(0.0, during_memory_mean - memory_background)
+        if during_memory_mean is not None and memory_background is not None
+        else ""
+    )
+
+    before_cpu_max = _numeric_metric(before, "host_cpu_usage_pct_max")
+    after_cpu_max = _numeric_metric(after, "host_cpu_usage_pct_max")
+    during_cpu_max = _numeric_metric(during, "host_cpu_usage_pct_max")
+    before_memory_max = _numeric_metric(before, "host_memory_used_bytes_max")
+    after_memory_max = _numeric_metric(after, "host_memory_used_bytes_max")
+    during_memory_max = _numeric_metric(during, "host_memory_used_bytes_max")
+    output["host_cpu_usage_pct_background_adjusted_max"] = (
+        max(0.0, during_cpu_max - max(before_cpu_max, after_cpu_max))
+        if None not in (during_cpu_max, before_cpu_max, after_cpu_max)
+        else ""
+    )
+    output["host_memory_used_bytes_background_adjusted_max"] = (
+        max(0.0, during_memory_max - max(before_memory_max, after_memory_max))
+        if None not in (during_memory_max, before_memory_max, after_memory_max)
+        else ""
+    )
+
+    during_duration = _numeric_metric(during, "prometheus_window_duration_seconds")
+    for metric, output_prefix in (
+        ("host_disk_read_bytes_delta", "disk_read"),
+        ("host_disk_write_bytes_delta", "disk_write"),
+        ("host_network_bytes_delta", "network"),
+    ):
+        before_delta = _numeric_metric(before, metric)
+        after_delta = _numeric_metric(after, metric)
+        during_delta = _numeric_metric(during, metric)
+        before_duration = _numeric_metric(before, "prometheus_window_duration_seconds")
+        after_duration = _numeric_metric(after, "prometheus_window_duration_seconds")
+        rates = (
+            before_delta / before_duration
+            if before_delta is not None and before_duration and before_duration > 0
+            else None,
+            after_delta / after_duration
+            if after_delta is not None and after_duration and after_duration > 0
+            else None,
+        )
+        background_rate = (
+            (rates[0] + rates[1]) / 2.0
+            if rates[0] is not None and rates[1] is not None
+            else None
+        )
+        output[f"prometheus_background_{output_prefix}_bytes_per_sec"] = (
+            background_rate if background_rate is not None else ""
+        )
+        output[f"prometheus_background_{output_prefix}_rate_abs_diff_bytes_per_sec"] = (
+            abs(rates[0] - rates[1])
+            if rates[0] is not None and rates[1] is not None
+            else ""
+        )
+        output[f"host_{output_prefix}_bytes_background_adjusted_delta"] = (
+            max(0.0, during_delta - background_rate * during_duration)
+            if during_delta is not None
+            and background_rate is not None
+            and during_duration is not None
+            else ""
+        )
+    return output
+
+
+def empty_prometheus_three_phase_result(
+    windows: dict[str, tuple[float, float]] | None,
+    error: str,
+    context_seconds: float,
+) -> dict[str, object]:
+    windows = windows or {phase: (0.0, 0.0) for phase in PROMETHEUS_PHASES}
+    return summarize_prometheus_phases(
+        {
+            phase: empty_prometheus_result(*windows.get(phase, (0.0, 0.0)), error)
+            for phase in PROMETHEUS_PHASES
+        },
+        context_seconds,
+    )
+
+
+def collect_prometheus_three_phase_metrics(
+    base_url: str,
+    windows: dict[str, tuple[float, float]],
+    step_seconds: float,
+    timeout_seconds: float,
+    queries: dict[str, str],
+    context_seconds: float,
+) -> dict[str, object]:
+    phase_results: dict[str, dict[str, object]] = {}
+    for phase in PROMETHEUS_PHASES:
+        try:
+            phase_results[phase] = collect_prometheus_host_metrics(
+                base_url,
+                *windows[phase],
+                step_seconds,
+                timeout_seconds,
+                queries,
+            )
+        except Exception as exc:
+            phase_results[phase] = empty_prometheus_result(
+                *windows[phase],
+                str(exc)[:500],
+            )
+    return summarize_prometheus_phases(phase_results, context_seconds)
+
+
 def empty_process_metrics(error: str = "") -> dict[str, object]:
     metrics = {field: "" for field in PROCESS_RUN_FIELDS}
     metrics["process_metrics_success"] = False
@@ -2146,12 +2522,13 @@ def run_program(
     dataset: str,
     measurement_seconds: float,
     min_measured_runs: int,
+    prometheus_context_seconds: float,
 ) -> tuple[
     list[dict[str, object]],
     dict[str, object],
     bool,
     str,
-    tuple[float, float],
+    dict[str, tuple[float, float]],
 ]:
     records: list[dict[str, object]] = []
     measured: list[float] = []
@@ -2191,6 +2568,11 @@ def run_program(
     for index in range(1, warmup + 1):
         execute("warmup", index)
 
+    before_start_timestamp = time.time()
+    if prometheus_context_seconds > 0:
+        time.sleep(prometheus_context_seconds)
+    before_end_timestamp = time.time()
+
     measurement_start_timestamp = time.time()
     measurement_start = time.perf_counter()
     measured_run_count = 0
@@ -2209,6 +2591,11 @@ def run_program(
     measurement_end_timestamp = time.time()
     actual_seconds = time.perf_counter() - measurement_start
 
+    after_start_timestamp = time.time()
+    if prometheus_context_seconds > 0:
+        time.sleep(prometheus_context_seconds)
+    after_end_timestamp = time.time()
+
     measured_records = [record for record in records if record["phase"] == "measure"]
     summary = {
         **summarize(measured),
@@ -2224,7 +2611,11 @@ def run_program(
         summary,
         success,
         error,
-        (measurement_start_timestamp, measurement_end_timestamp),
+        {
+            "before": (before_start_timestamp, before_end_timestamp),
+            "during": (measurement_start_timestamp, measurement_end_timestamp),
+            "after": (after_start_timestamp, after_end_timestamp),
+        },
     )
 
 
@@ -2289,7 +2680,7 @@ def environment_manifest(
         "cxx_compiler_version": compiler_version(args.cxx_compiler),
         "run_c_compiler_version": compiler_version(args.run_c_compiler),
         "run_cxx_compiler_version": compiler_version(args.run_cxx_compiler),
-        "opt_version": command_text(["opt", "--version"]) if shutil.which("opt") else "unavailable",
+        "opt_version": llvm_opt_version(),
         "opt_level": args.opt_level,
         "warmup_runs": args.warmup,
         "measurement_seconds": args.measurement_seconds,
@@ -2302,6 +2693,8 @@ def environment_manifest(
         "prometheus_job": args.prometheus_job,
         "prometheus_instance": args.prometheus_instance,
         "prometheus_query_step_sec": args.prometheus_query_step,
+        "prometheus_context_seconds": args.prometheus_context_seconds,
+        "prometheus_sampling_scheme": "before_during_after_v1",
     }
 
 
@@ -2313,7 +2706,7 @@ def process_program(
     dict[str, object],
     list[dict[str, object]],
     dict[str, object],
-    tuple[float, float] | None,
+    dict[str, tuple[float, float]] | None,
 ]:
     error_messages: list[str] = []
     extra_flags = program_extra_flags(program, args.extra_flag or [])
@@ -2326,6 +2719,7 @@ def process_program(
         "representation_compiler_version": compiler_version(representation_compiler),
         "runtime_compiler": runtime_compiler,
         "runtime_compiler_version": compiler_version(runtime_compiler),
+        "opt_version": llvm_opt_version(),
     }
     ast_path, ast_success, ast_error = generate_ast(program, args.c_compiler, args.cxx_compiler, extra_flags)
     if ast_error and not ast_success:
@@ -2362,11 +2756,11 @@ def process_program(
         0.0,
         args.min_measured_runs,
     )
-    measurement_window: tuple[float, float] | None = None
+    measurement_windows: dict[str, tuple[float, float]] | None = None
     run_success = False
     run_error = ""
     if build_success and not args.no_run:
-        run_records, runtime_summary, run_success, run_error, measurement_window = run_program(
+        run_records, runtime_summary, run_success, run_error, measurement_windows = run_program(
             exe_path,
             args.warmup,
             args.runs,
@@ -2374,6 +2768,7 @@ def process_program(
             args.dataset,
             args.measurement_seconds,
             args.min_measured_runs,
+            args.prometheus_context_seconds if args.prometheus_exporter != "off" else 0.0,
         )
         measurement_summary = {
             field: runtime_summary.get(field, "")
@@ -2439,7 +2834,7 @@ def process_program(
         **measurement_summary,
         "run_success": run_success,
     }
-    return static_row, run_rows, summary_row, measurement_window
+    return static_row, run_rows, summary_row, measurement_windows
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -2451,7 +2846,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--env-id",
         default=None,
-        help="Environment id written to CSV. Defaults to hostname-architecture.",
+        help=(
+            "Environment id written to CSV. Defaults to LLVM_RUNTIME_ENV_ID when set, "
+            "otherwise hostname-architecture. Pass the same value to every dataset pipeline."
+        ),
     )
     parser.add_argument("--input-id", default="default", help="Input id written to CSV.")
     parser.add_argument("--compile-config-id", default="release_O2", help="Compile config id written to CSV.")
@@ -2517,6 +2915,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prometheus-query-step", type=float, default=1.0, help="Prometheus query_range step in seconds.")
     parser.add_argument("--prometheus-query-timeout", type=float, default=10.0, help="Timeout for one Prometheus API request.")
     parser.add_argument(
+        "--prometheus-context-seconds",
+        type=float,
+        default=5.0,
+        help=(
+            "Quiet host-observation duration immediately before and after each measured "
+            "benchmark window. Use at least two scrape intervals."
+        ),
+    )
+    parser.add_argument(
         "--prometheus-query-delay",
         type=float,
         default=2.0,
@@ -2542,7 +2949,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--measurement-seconds must be >= 0")
     if args.timeout <= 0:
         parser.error("--timeout must be > 0")
-    if args.prometheus_query_delay < 0 or args.prometheus_final_wait < 0:
+    if (
+        args.prometheus_query_delay < 0
+        or args.prometheus_final_wait < 0
+        or args.prometheus_context_seconds < 0
+    ):
         parser.error("Prometheus wait values must be >= 0")
     if args.prometheus_query_step <= 0 or args.prometheus_query_timeout <= 0:
         parser.error("Prometheus query step and timeout must be > 0")
@@ -2625,12 +3036,14 @@ def main(argv: list[str] | None = None) -> int:
         static_rows: list[dict[str, object]] = []
         run_rows: list[dict[str, object]] = []
         summary_rows: list[dict[str, object]] = []
-        prometheus_measurement_windows: list[tuple[dict[str, object], float, float]] = []
+        prometheus_measurement_windows: list[
+            tuple[dict[str, object], dict[str, tuple[float, float]]]
+        ] = []
         for completed, program in enumerate(programs, start=1):
             profile_suffix = f" [{program.input_profile}]" if program.input_profile else ""
             print(f"[pipeline] processing {program.program_id}{profile_suffix}")
             program_start = time.perf_counter()
-            static_row, program_run_rows, summary_row, measurement_window = process_program(
+            static_row, program_run_rows, summary_row, measurement_windows = process_program(
                 program,
                 args,
                 static_environment,
@@ -2638,22 +3051,23 @@ def main(argv: list[str] | None = None) -> int:
             static_rows.append(static_row)
             run_rows.extend(program_run_rows)
             summary_rows.append(summary_row)
-            if measurement_window is not None:
+            if measurement_windows is not None:
                 if host_metric_queries:
-                    prometheus_measurement_windows.append((summary_row, *measurement_window))
+                    prometheus_measurement_windows.append((summary_row, measurement_windows))
                 else:
                     summary_row.update(
-                        empty_prometheus_result(
-                            *measurement_window,
+                        empty_prometheus_three_phase_result(
+                            measurement_windows,
                             "Prometheus host metric collection is disabled",
+                            args.prometheus_context_seconds,
                         )
                     )
             else:
                 summary_row.update(
-                    empty_prometheus_result(
-                        0.0,
-                        0.0,
+                    empty_prometheus_three_phase_result(
+                        None,
                         "Benchmark measurement was not executed",
+                        args.prometheus_context_seconds,
                     )
                 )
 
@@ -2684,21 +3098,21 @@ def main(argv: list[str] | None = None) -> int:
                 "[prometheus] collecting host metrics for "
                 f"{len(prometheus_measurement_windows)} program windows"
             )
-        for summary_row, start_timestamp, end_timestamp in prometheus_measurement_windows:
+        for summary_row, measurement_windows in prometheus_measurement_windows:
             try:
-                metrics = collect_prometheus_host_metrics(
+                metrics = collect_prometheus_three_phase_metrics(
                     args.prometheus_url,
-                    start_timestamp,
-                    end_timestamp,
+                    measurement_windows,
                     max(args.prometheus_query_step, 0.1),
                     max(args.prometheus_query_timeout, 0.1),
                     host_metric_queries,
+                    args.prometheus_context_seconds,
                 )
             except Exception as exc:
-                metrics = empty_prometheus_result(
-                    start_timestamp,
-                    end_timestamp,
+                metrics = empty_prometheus_three_phase_result(
+                    measurement_windows,
                     str(exc)[:500],
+                    args.prometheus_context_seconds,
                 )
                 print(
                     f"[prometheus] warning: could not collect metrics for "
