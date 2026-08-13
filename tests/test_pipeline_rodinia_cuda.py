@@ -179,12 +179,43 @@ class GpuDeviceTests(unittest.TestCase):
         self.assertEqual(24564 * 1024 * 1024, devices[0].total_memory_bytes)
         self.assertEqual(450.0, devices[0].power_limit_watts)
 
+    def test_query_gpu_devices_falls_back_when_compute_cap_is_unsupported(self) -> None:
+        unsupported = pipeline.subprocess.CompletedProcess(
+            args=[],
+            returncode=2,
+            stdout="",
+            stderr='Field "compute_cap" is not a valid field to query.\n',
+        )
+        fallback = pipeline.subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="0, GPU-abc, NVIDIA GeForce RTX 3090, 24576, 470.57.02, 350.00\n",
+            stderr="",
+        )
+        with mock.patch.object(
+            pipeline, "_run_text", side_effect=[unsupported, fallback]
+        ) as run_text:
+            devices = pipeline.query_gpu_devices("nvidia-smi")
+
+        self.assertEqual(2, run_text.call_count)
+        self.assertEqual(1, len(devices))
+        self.assertEqual("", devices[0].compute_capability)
+        self.assertEqual("470.57.02", devices[0].driver_version)
+        self.assertEqual(350.0, devices[0].power_limit_watts)
+        self.assertEqual(24576 * 1024 * 1024, devices[0].total_memory_bytes)
+
     def test_auto_arch_uses_compute_capability(self) -> None:
         device = pipeline.GpuDevice(0, "GPU-x", "test", "8.6", 0, "", None)
         self.assertEqual("sm_86", pipeline.resolve_cuda_arch("auto", device))
         self.assertEqual("sm_90", pipeline.resolve_cuda_arch("SM_90", device))
         with self.assertRaises(ValueError):
             pipeline.resolve_cuda_arch("compute_86", device)
+
+    def test_explicit_arch_works_without_nvidia_smi_compute_capability(self) -> None:
+        device = pipeline.GpuDevice(0, "GPU-x", "test", "", 0, "", None)
+        self.assertEqual("sm_86", pipeline.resolve_cuda_arch("sm_86", device))
+        with self.assertRaisesRegex(ValueError, "does not expose compute capability"):
+            pipeline.resolve_cuda_arch("auto", device)
 
     def test_cuda12_texture_reference_benchmarks_are_detected(self) -> None:
         benchmarks = pipeline.base.load_manifest(MANIFEST_PATH)

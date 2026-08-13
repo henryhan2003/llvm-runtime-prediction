@@ -245,23 +245,47 @@ def query_gpu_devices(nvidia_smi: str) -> list[GpuDevice]:
     result = _run_text(
         [nvidia_smi, f"--query-gpu={fields}", "--format=csv,noheader,nounits"]
     )
+    has_compute_capability = True
     if result.returncode != 0:
         message = (result.stderr or result.stdout).strip()
-        raise RuntimeError(f"nvidia-smi GPU query failed: {message}")
+        if "compute_cap" not in message.lower():
+            raise RuntimeError(f"nvidia-smi GPU query failed: {message}")
+        # Older nvidia-smi releases (including the 470 driver series) do not
+        # expose compute_cap as a selectable field. Retain the other identity
+        # fields and require an explicit --cuda-arch for those systems.
+        fields = "index,uuid,name,memory.total,driver_version,power.limit"
+        result = _run_text(
+            [nvidia_smi, f"--query-gpu={fields}", "--format=csv,noheader,nounits"]
+        )
+        has_compute_capability = False
+        if result.returncode != 0:
+            message = (result.stderr or result.stdout).strip()
+            raise RuntimeError(f"nvidia-smi GPU query failed: {message}")
     devices: list[GpuDevice] = []
     for row in csv.reader(line for line in result.stdout.splitlines() if line.strip()):
-        if len(row) != 7:
+        expected_fields = 7 if has_compute_capability else 6
+        if len(row) != expected_fields:
             continue
-        memory_mib = _float_or_none(row[4]) or 0.0
+        if has_compute_capability:
+            compute_capability = row[3].strip()
+            memory_index = 4
+            driver_index = 5
+            power_index = 6
+        else:
+            compute_capability = ""
+            memory_index = 3
+            driver_index = 4
+            power_index = 5
+        memory_mib = _float_or_none(row[memory_index]) or 0.0
         devices.append(
             GpuDevice(
                 physical_index=int(row[0].strip()),
                 uuid=row[1].strip(),
                 name=row[2].strip(),
-                compute_capability=row[3].strip(),
+                compute_capability=compute_capability,
                 total_memory_bytes=int(memory_mib * 1024 * 1024),
-                driver_version=row[5].strip(),
-                power_limit_watts=_float_or_none(row[6]),
+                driver_version=row[driver_index].strip(),
+                power_limit_watts=_float_or_none(row[power_index]),
             )
         )
     if not devices:
@@ -1015,7 +1039,8 @@ def resolve_cuda_arch(requested: str, device: GpuDevice) -> str:
         digits = re.sub(r"\D", "", device.compute_capability)
         if not digits:
             raise ValueError(
-                "could not derive CUDA architecture from nvidia-smi; pass --cuda-arch sm_XX"
+                "this nvidia-smi version does not expose compute capability; "
+                "pass --cuda-arch sm_XX explicitly"
             )
         value = f"sm_{digits}"
     if not re.fullmatch(r"sm_\d{2,3}", value):
