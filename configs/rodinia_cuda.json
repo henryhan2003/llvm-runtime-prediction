@@ -1,0 +1,376 @@
+{
+  "schema_version": 1,
+  "benchmarks": [
+    {
+      "id": "b+tree",
+      "workdir": "b+tree",
+      "executable": "b+tree.out",
+      "build": [["make", "-B", "b+tree.out", "C_C=gcc", "CUD_C={nvcc}", "CUDA_DIR={cuda_dir}", "CUDA_LIB_DIR={cuda_lib_dir}", "CUDA_FLAG=-arch={cuda_arch}", "KERNEL_DIM=-DRD_WG_SIZE_0=256"]],
+      "clean": [["make", "clean"]],
+      "sources": ["main.c", "kernel/kernel_gpu_cuda_wrapper.cu", "kernel/kernel_gpu_cuda_wrapper_2.cu", "util/timer/timer.c", "util/num/num.c", "util/cuda/cuda.cu"],
+      "ast_owned_sources": ["main.c", "kernel/kernel_gpu_cuda_wrapper.cu", "kernel/kernel_gpu_cuda.cu", "kernel/kernel_gpu_cuda_wrapper_2.cu", "kernel/kernel_gpu_cuda_2.cu", "util/timer/timer.c", "util/num/num.c", "util/cuda/cuda.cu"],
+      "include_dirs": ["."],
+      "static_flags": ["-DRD_WG_SIZE_0=256"],
+      "inputs": [
+        {"id": "mil-smoke", "profile": "smoke", "args": ["file", "../../data/b+tree/mil.txt", "command", "../../data/b+tree/command.txt"], "parameters": {"input_file": "mil.txt", "command_file": "command.txt", "work_group_size": 256}, "required_files": ["../../data/b+tree/mil.txt", "../../data/b+tree/command.txt"]},
+        {"id": "mil-official", "profile": "official", "args": ["file", "../../data/b+tree/mil.txt", "command", "../../data/b+tree/command.txt"], "parameters": {"input_file": "mil.txt", "command_file": "command.txt", "work_group_size": 256}, "required_files": ["../../data/b+tree/mil.txt", "../../data/b+tree/command.txt"]}
+      ]
+    },
+    {
+      "id": "backprop",
+      "workdir": "backprop",
+      "executable": "backprop",
+      "build": [["make", "-B", "backprop", "CC=gcc", "NVCC={nvcc}", "CUDA_DIR={cuda_dir}", "CUDA_LIB_DIR={cuda_lib_dir}", "NVCC_FLAGS=-I{cuda_include_dir} -O2 -arch={cuda_arch}"]],
+      "clean": [["make", "clean"]],
+      "sources": ["backprop.c", "facetrain.c", "imagenet.c", "backprop_cuda.cu"],
+      "ast_owned_sources": ["backprop.c", "facetrain.c", "imagenet.c", "backprop_cuda.cu", "backprop_cuda_kernel.cu"],
+      "include_dirs": ["."],
+      "static_flags": [],
+      "inputs": [
+        {"id": "layer-1024", "profile": "smoke", "args": ["1024"], "parameters": {"input_layer_size": 1024}},
+        {"id": "layer-65536", "profile": "official", "args": ["65536"], "parameters": {"input_layer_size": 65536}}
+      ]
+    },
+    {
+      "id": "bfs",
+      "workdir": "bfs",
+      "executable": "bfs",
+      "build": [["{nvcc}", "-O2", "-arch={cuda_arch}", "bfs.cu", "-o", "bfs"]],
+      "clean": [["make", "clean"]],
+      "sources": ["bfs.cu"],
+      "ast_owned_sources": ["bfs.cu", "kernel.cu", "kernel2.cu"],
+      "include_dirs": ["."],
+      "static_flags": [],
+      "inputs": [
+        {"id": "graph-4096", "profile": "smoke", "args": ["../../data/bfs/graph4096.txt"], "parameters": {"nodes": 4096, "input_file": "graph4096.txt"}, "required_files": ["../../data/bfs/graph4096.txt"]},
+        {"id": "graph-1mw", "profile": "official", "args": ["../../data/bfs/graph1MW_6.txt"], "parameters": {"input_file": "graph1MW_6.txt"}, "required_files": ["../../data/bfs/graph1MW_6.txt"]}
+      ]
+    },
+    {
+      "id": "cfd",
+      "workdir": "cfd",
+      "executable": "euler3d",
+      "build": [["{nvcc}", "-O2", "-arch={cuda_arch}", "-Xptxas", "-v", "-I../hybridsort", "euler3d.cu", "-o", "euler3d"]],
+      "clean": [["make", "clean"]],
+      "sources": ["euler3d.cu"],
+      "include_dirs": [".", "../hybridsort"],
+      "static_flags": [],
+      "inputs": [
+        {"id": "fvcorr-097k", "profile": "smoke", "args": ["../../data/cfd/fvcorr.domn.097K"], "parameters": {"input_file": "fvcorr.domn.097K"}, "required_files": ["../../data/cfd/fvcorr.domn.097K"]},
+        {"id": "fvcorr-193k", "profile": "official", "args": ["../../data/cfd/fvcorr.domn.193K"], "parameters": {"input_file": "fvcorr.domn.193K"}, "required_files": ["../../data/cfd/fvcorr.domn.193K"]},
+        {"id": "missile-02m", "profile": "official", "args": ["../../data/cfd/missile.domn.0.2M"], "parameters": {"input_file": "missile.domn.0.2M"}, "required_files": ["../../data/cfd/missile.domn.0.2M"]}
+      ]
+    },
+    {
+      "id": "dwt2d",
+      "workdir": "dwt2d",
+      "executable": "dwt2d",
+      "build": [["make", "-B", "dwt2d", "CUDA_DIR={cuda_dir}", "CUDA_INSTALL_PATH={cuda_dir}", "NVCC={nvcc}", "NVCCFLAGS=-arch={cuda_arch} -I. -I{cuda_include_dir} -O2 --compiler-options -fno-strict-aliasing", "LDFLAGS=-L{cuda_lib_dir} -lcudart"]],
+      "clean": [["make", "clean"]],
+      "sources": ["main.cu", "dwt.cu", "components.cu", "dwt_cuda/fdwt53.cu", "dwt_cuda/fdwt97.cu", "dwt_cuda/common.cu", "dwt_cuda/rdwt97.cu", "dwt_cuda/rdwt53.cu"],
+      "include_dirs": [".", "dwt_cuda"],
+      "static_flags": [],
+      "inputs": [
+        {"id": "gray-192", "profile": "smoke", "args": ["-d", "192x192", "-f", "-5", "-l", "3", "../../data/dwt2d/192.bmp"], "parameters": {"width": 192, "height": 192, "components": 1, "levels": 3, "wavelet": "5/3"}, "required_files": ["../../data/dwt2d/192.bmp"]},
+        {"id": "rgb-1024", "profile": "official", "args": ["-d", "1024x1024", "-f", "-5", "-l", "3", "../../data/dwt2d/rgb.bmp"], "parameters": {"width": 1024, "height": 1024, "components": 3, "levels": 3, "wavelet": "5/3"}, "required_files": ["../../data/dwt2d/rgb.bmp"]}
+      ]
+    },
+    {
+      "id": "gaussian",
+      "workdir": "gaussian",
+      "executable": "gaussian",
+      "build": [["{nvcc}", "-O2", "-arch={cuda_arch}", "gaussian.cu", "-o", "gaussian"]],
+      "clean": [["make", "clean"]],
+      "sources": ["gaussian.cu"],
+      "include_dirs": ["."],
+      "static_flags": [],
+      "inputs": [
+        {"id": "matrix-16", "profile": "smoke", "args": ["-f", "../../data/gaussian/matrix16.txt"], "parameters": {"matrix_size": 16, "input_file": "matrix16.txt"}, "required_files": ["../../data/gaussian/matrix16.txt"]},
+        {"id": "matrix-1024", "profile": "official", "args": ["-f", "../../data/gaussian/matrix1024.txt"], "parameters": {"matrix_size": 1024, "input_file": "matrix1024.txt"}, "required_files": ["../../data/gaussian/matrix1024.txt"]}
+      ]
+    },
+    {
+      "id": "heartwall",
+      "workdir": "heartwall",
+      "executable": "heartwall",
+      "build": [
+        ["gcc", "-O3", "-IAVI", "-c", "AVI/avilib.c", "-o", "AVI/avilib.o"],
+        ["gcc", "-O3", "-IAVI", "-c", "AVI/avimod.c", "-o", "AVI/avimod.o"],
+        ["{nvcc}", "-O3", "-arch={cuda_arch}", "-IAVI", "-c", "main.cu", "-o", "main.o"],
+        ["{nvcc}", "main.o", "AVI/avilib.o", "AVI/avimod.o", "-lm", "-o", "heartwall"]
+      ],
+      "clean": [["make", "clean"]],
+      "sources": ["main.cu", "AVI/avilib.c", "AVI/avimod.c"],
+      "ast_owned_sources": ["main.cu", "define.c", "kernel.cu", "AVI/avilib.c", "AVI/avimod.c"],
+      "include_dirs": [".", "AVI"],
+      "static_flags": [],
+      "inputs": [
+        {"id": "test-2-frames", "profile": "smoke", "args": ["../../data/heartwall/test.avi", "2"], "parameters": {"frames": 2, "input_file": "test.avi"}, "required_files": ["../../data/heartwall/test.avi"]},
+        {"id": "test-20-frames", "profile": "official", "args": ["../../data/heartwall/test.avi", "20"], "parameters": {"frames": 20, "input_file": "test.avi"}, "required_files": ["../../data/heartwall/test.avi"]}
+      ]
+    },
+    {
+      "id": "hotspot",
+      "workdir": "hotspot",
+      "executable": "hotspot",
+      "build": [["{nvcc}", "-O2", "-arch={cuda_arch}", "hotspot.cu", "-o", "hotspot"]],
+      "clean": [["make", "clean"]],
+      "sources": ["hotspot.cu"],
+      "include_dirs": ["."],
+      "static_flags": [],
+      "inputs": [
+        {"id": "grid-64", "profile": "smoke", "args": ["64", "2", "1", "../../data/hotspot/temp_64", "../../data/hotspot/power_64", "output.out"], "parameters": {"grid_size": 64, "pyramid_height": 2, "iterations": 1}, "required_files": ["../../data/hotspot/temp_64", "../../data/hotspot/power_64"]},
+        {"id": "grid-512", "profile": "official", "args": ["512", "2", "2", "../../data/hotspot/temp_512", "../../data/hotspot/power_512", "output.out"], "parameters": {"grid_size": 512, "pyramid_height": 2, "iterations": 2}, "required_files": ["../../data/hotspot/temp_512", "../../data/hotspot/power_512"]}
+      ]
+    },
+    {
+      "id": "hotspot3D",
+      "workdir": "hotspot3D",
+      "executable": "3D",
+      "build": [["{nvcc}", "-O2", "-arch={cuda_arch}", "3D.cu", "-o", "3D"]],
+      "clean": [["make", "clean"]],
+      "sources": ["3D.cu"],
+      "ast_owned_sources": ["3D.cu", "opt1.cu"],
+      "include_dirs": ["."],
+      "static_flags": [],
+      "inputs": [
+        {"id": "grid-64x8", "profile": "smoke", "args": ["64", "8", "10", "../../data/hotspot3D/power_64x8", "../../data/hotspot3D/temp_64x8", "output.out"], "parameters": {"grid_size": 64, "layers": 8, "iterations": 10}, "required_files": ["../../data/hotspot3D/power_64x8", "../../data/hotspot3D/temp_64x8"]},
+        {"id": "grid-512x8", "profile": "official", "args": ["512", "8", "100", "../../data/hotspot3D/power_512x8", "../../data/hotspot3D/temp_512x8", "output.out"], "parameters": {"grid_size": 512, "layers": 8, "iterations": 100}, "required_files": ["../../data/hotspot3D/power_512x8", "../../data/hotspot3D/temp_512x8"]}
+      ]
+    },
+    {
+      "id": "huffman",
+      "workdir": "huffman",
+      "executable": "pavle",
+      "build": [["{nvcc}", "-O3", "-arch={cuda_arch}", "-Xcompiler=-m64", "main_test_cu.cu", "stats_logger.cpp", "cpuencode.cpp", "-o", "pavle"]],
+      "clean": [["make", "clean"]],
+      "sources": ["main_test_cu.cu", "stats_logger.cpp", "cpuencode.cpp"],
+      "ast_owned_sources": ["main_test_cu.cu", "hist.cu", "vlc_kernel_sm64huff.cu", "pabio_kernels_v2.cu", "scan.cu", "scanLargeArray_kernel.cu", "pack_kernels.cu", "stats_logger.cpp", "cpuencode.cpp"],
+      "include_dirs": ["."],
+      "static_flags": [],
+      "inputs": [
+        {"id": "test1024-smoke", "profile": "smoke", "args": ["../../data/huffman/test1024_H2.206587175259.in"], "parameters": {"input_file": "test1024_H2.206587175259.in", "block_threads": 256}, "required_files": ["../../data/huffman/test1024_H2.206587175259.in"]},
+        {"id": "test1024-official", "profile": "official", "args": ["../../data/huffman/test1024_H2.206587175259.in"], "parameters": {"input_file": "test1024_H2.206587175259.in", "block_threads": 256}, "required_files": ["../../data/huffman/test1024_H2.206587175259.in"]}
+      ]
+    },
+    {
+      "id": "hybridsort",
+      "workdir": "hybridsort",
+      "executable": "hybridsort",
+      "build": [],
+      "clean": [],
+      "sources": [],
+      "static_flags": [],
+      "inputs": [],
+      "enabled": false,
+      "disabled_reason": "Rodinia 3.1 implementation requires legacy CUDA texture references plus OpenGL/GLUT; modern CUDA toolkits removed the texture-reference API."
+    },
+    {
+      "id": "kmeans",
+      "workdir": "kmeans",
+      "executable": "kmeans",
+      "build": [],
+      "clean": [],
+      "sources": [],
+      "static_flags": [],
+      "inputs": [],
+      "enabled": false,
+      "disabled_reason": "The Rodinia 3.1 source hardcodes cudaSetDevice(1) and uses removed texture-reference APIs; it needs a separate source port before selected-GPU measurements are valid."
+    },
+    {
+      "id": "lavaMD",
+      "workdir": "lavaMD",
+      "executable": "lavaMD",
+      "build": [
+        ["gcc", "-O3", "-fopenmp", "-c", "main.c", "-o", "main.o"],
+        ["gcc", "-O3", "-c", "util/num/num.c", "-o", "util/num/num.o"],
+        ["gcc", "-O3", "-c", "util/timer/timer.c", "-o", "util/timer/timer.o"],
+        ["{nvcc}", "-O3", "-arch={cuda_arch}", "-c", "kernel/kernel_gpu_cuda_wrapper.cu", "-o", "kernel/kernel_gpu_cuda_wrapper.o"],
+        ["{nvcc}", "-O3", "-arch={cuda_arch}", "-c", "util/device/device.cu", "-o", "util/device/device.o"],
+        ["g++", "main.o", "kernel/kernel_gpu_cuda_wrapper.o", "util/num/num.o", "util/timer/timer.o", "util/device/device.o", "-L{cuda_lib_dir}", "-lcuda", "-lcudart", "-lgomp", "-lm", "-o", "lavaMD"]
+      ],
+      "clean": [["make", "-f", "makefile", "clean"]],
+      "sources": ["main.c", "kernel/kernel_gpu_cuda_wrapper.cu", "util/num/num.c", "util/timer/timer.c", "util/device/device.cu"],
+      "ast_owned_sources": ["main.c", "kernel/kernel_gpu_cuda_wrapper.cu", "kernel/kernel_gpu_cuda.cu", "util/num/num.c", "util/timer/timer.c", "util/device/device.cu"],
+      "include_dirs": ["."],
+      "static_flags": ["-fopenmp"],
+      "inputs": [
+        {"id": "boxes-2", "profile": "smoke", "args": ["-boxes1d", "2"], "parameters": {"boxes_per_dimension": 2}},
+        {"id": "boxes-10", "profile": "official", "args": ["-boxes1d", "10"], "parameters": {"boxes_per_dimension": 10}}
+      ]
+    },
+    {
+      "id": "leukocyte",
+      "workdir": "leukocyte/CUDA",
+      "executable": "leukocyte",
+      "build": [["make", "-B", "leukocyte", "CC=gcc", "NVCC={nvcc}", "CUDA_DIR={cuda_dir}", "CUDA_LIB_DIR={cuda_lib_dir}", "NVCC_FLAGS=-I{cuda_include_dir} -O3 -arch={cuda_arch}"]],
+      "clean": [["make", "clean"]],
+      "sources": ["detect_main.c", "avilib.c", "find_ellipse.c", "find_ellipse_kernel.cu", "track_ellipse.c", "track_ellipse_kernel.cu", "misc_math.c"],
+      "include_dirs": [".", "../meschach_lib"],
+      "static_flags": [],
+      "inputs": [
+        {"id": "test-2-frames", "profile": "smoke", "args": ["../../../data/leukocyte/testfile.avi", "2"], "parameters": {"frames": 2, "input_file": "testfile.avi"}, "required_files": ["../../../data/leukocyte/testfile.avi"]},
+        {"id": "test-5-frames", "profile": "official", "args": ["../../../data/leukocyte/testfile.avi", "5"], "parameters": {"frames": 5, "input_file": "testfile.avi"}, "required_files": ["../../../data/leukocyte/testfile.avi"]}
+      ]
+    },
+    {
+      "id": "lud",
+      "workdir": "lud",
+      "executable": "cuda/lud_cuda",
+      "build": [["make", "-C", "cuda", "-B", "NVCC={nvcc}", "NVCCFLAGS=-I../common -O3 -use_fast_math -arch={cuda_arch} -lm"]],
+      "clean": [["make", "-C", "cuda", "clean"]],
+      "sources": ["cuda/lud.cu", "cuda/lud_kernel.cu", "common/common.c"],
+      "include_dirs": [".", "common", "cuda"],
+      "static_flags": ["-DGPU_TIMER"],
+      "inputs": [
+        {"id": "matrix-64", "profile": "smoke", "args": ["-i", "../../data/lud/64.dat"], "parameters": {"matrix_size": 64, "input_file": "64.dat"}, "required_files": ["../../data/lud/64.dat"]},
+        {"id": "matrix-2048", "profile": "official", "args": ["-i", "../../data/lud/2048.dat"], "parameters": {"matrix_size": 2048, "input_file": "2048.dat"}, "required_files": ["../../data/lud/2048.dat"]}
+      ]
+    },
+    {
+      "id": "mummergpu",
+      "workdir": "mummergpu",
+      "executable": "bin/mummergpu",
+      "build": [],
+      "clean": [],
+      "sources": [],
+      "static_flags": [],
+      "inputs": [],
+      "enabled": false,
+      "disabled_reason": "MUMmerGPU is CUDA 1.x-era code built around removed texture-reference and NVIDIA SDK APIs; it needs a separate source port before modern-toolkit measurements are valid."
+    },
+    {
+      "id": "myocyte",
+      "workdir": "myocyte",
+      "executable": "myocyte.out",
+      "build": [["{nvcc}", "-O3", "-arch={cuda_arch}", "main.cu", "-lm", "-o", "myocyte.out"]],
+      "clean": [["make", "-f", "makefile", "clean"]],
+      "sources": ["main.cu"],
+      "ast_owned_sources": ["main.cu", "define.c", "file.c", "timer.c", "work.cu", "kernel_ecc.cu", "kernel_cam.cu", "kernel_fin.cu", "kernel.cu", "master.cu", "embedded_fehlberg_7_8.cu", "solver.cu", "work_2.cu", "kernel_fin_2.cu", "kernel_ecc_2.cu", "kernel_cam_2.cu", "kernel_2.cu", "embedded_fehlberg_7_8_2.cu", "solver_2.cu"],
+      "include_dirs": ["."],
+      "static_flags": [],
+      "required_files": ["../../data/myocyte/y.txt", "../../data/myocyte/params.txt"],
+      "inputs": [
+        {"id": "time-10-one-instance", "profile": "smoke", "args": ["10", "1", "0"], "parameters": {"simulation_time_ms": 10, "instances": 1, "parallelization_method": 0}},
+        {"id": "time-100-one-instance", "profile": "official", "args": ["100", "1", "0"], "parameters": {"simulation_time_ms": 100, "instances": 1, "parallelization_method": 0}}
+      ]
+    },
+    {
+      "id": "nn",
+      "workdir": "nn",
+      "executable": "nn",
+      "build": [["{nvcc}", "-O3", "-arch={cuda_arch}", "nn_cuda.cu", "-o", "nn"]],
+      "clean": [["make", "clean"]],
+      "sources": ["nn_cuda.cu"],
+      "include_dirs": ["."],
+      "static_flags": [],
+      "required_files": ["filelist_4", "../../data/nn/cane4_0.db", "../../data/nn/cane4_1.db", "../../data/nn/cane4_2.db", "../../data/nn/cane4_3.db"],
+      "inputs": [
+        {"id": "cane4-smoke", "profile": "smoke", "args": ["filelist_4", "-r", "5", "-lat", "30", "-lng", "90"], "parameters": {"database_files": 4, "result_count": 5, "latitude": 30, "longitude": 90}},
+        {"id": "cane4-official", "profile": "official", "args": ["filelist_4", "-r", "5", "-lat", "30", "-lng", "90"], "parameters": {"database_files": 4, "result_count": 5, "latitude": 30, "longitude": 90}}
+      ]
+    },
+    {
+      "id": "nw",
+      "workdir": "nw",
+      "executable": "needle",
+      "build": [["{nvcc}", "-O2", "-arch={cuda_arch}", "-DRD_WG_SIZE_0=16", "needle.cu", "-o", "needle"]],
+      "clean": [["make", "clean"]],
+      "sources": ["needle.cu"],
+      "ast_owned_sources": ["needle.cu", "needle_kernel.cu"],
+      "include_dirs": ["."],
+      "static_flags": ["-DRD_WG_SIZE_0=16"],
+      "inputs": [
+        {"id": "dimension-256", "profile": "smoke", "args": ["256", "10"], "parameters": {"sequence_dimension": 256, "penalty": 10, "work_group_size": 16}},
+        {"id": "dimension-2048", "profile": "official", "args": ["2048", "10"], "parameters": {"sequence_dimension": 2048, "penalty": 10, "work_group_size": 16}}
+      ]
+    },
+    {
+      "id": "particlefilter_naive",
+      "workdir": "particlefilter",
+      "executable": "particlefilter_naive",
+      "build": [["{nvcc}", "-O3", "-use_fast_math", "-arch={cuda_arch}", "ex_particle_CUDA_naive_seq.cu", "-lm", "-o", "particlefilter_naive"]],
+      "clean": [["make", "clean"]],
+      "sources": ["ex_particle_CUDA_naive_seq.cu"],
+      "include_dirs": ["."],
+      "static_flags": [],
+      "inputs": [
+        {"id": "video-32x32x2-p100", "profile": "smoke", "args": ["-x", "32", "-y", "32", "-z", "2", "-np", "100"], "parameters": {"width": 32, "height": 32, "frames": 2, "particles": 100}},
+        {"id": "video-128x128x10-p1000", "profile": "official", "args": ["-x", "128", "-y", "128", "-z", "10", "-np", "1000"], "parameters": {"width": 128, "height": 128, "frames": 10, "particles": 1000}}
+      ]
+    },
+    {
+      "id": "particlefilter_float",
+      "workdir": "particlefilter",
+      "executable": "particlefilter_float",
+      "build": [["{nvcc}", "-O3", "-use_fast_math", "-arch={cuda_arch}", "ex_particle_CUDA_float_seq.cu", "-lm", "-o", "particlefilter_float"]],
+      "clean": [["make", "clean"]],
+      "sources": ["ex_particle_CUDA_float_seq.cu"],
+      "include_dirs": ["."],
+      "static_flags": [],
+      "inputs": [
+        {"id": "video-32x32x2-p100", "profile": "smoke", "args": ["-x", "32", "-y", "32", "-z", "2", "-np", "100"], "parameters": {"width": 32, "height": 32, "frames": 2, "particles": 100}},
+        {"id": "video-128x128x10-p1000", "profile": "official", "args": ["-x", "128", "-y", "128", "-z", "10", "-np", "1000"], "parameters": {"width": 128, "height": 128, "frames": 10, "particles": 1000}}
+      ]
+    },
+    {
+      "id": "pathfinder",
+      "workdir": "pathfinder",
+      "executable": "pathfinder",
+      "build": [["{nvcc}", "-O2", "-arch={cuda_arch}", "pathfinder.cu", "-o", "pathfinder"]],
+      "clean": [["make", "clean"]],
+      "sources": ["pathfinder.cu"],
+      "include_dirs": ["."],
+      "static_flags": [],
+      "inputs": [
+        {"id": "grid-1000x20", "profile": "smoke", "args": ["1000", "20", "10"], "parameters": {"columns": 1000, "rows": 20, "pyramid_height": 10}},
+        {"id": "grid-100000x100", "profile": "official", "args": ["100000", "100", "20"], "parameters": {"columns": 100000, "rows": 100, "pyramid_height": 20}}
+      ]
+    },
+    {
+      "id": "srad_v1",
+      "workdir": "srad/srad_v1",
+      "executable": "srad",
+      "build": [["{nvcc}", "-O3", "-arch={cuda_arch}", "main.cu", "-lm", "-o", "srad"]],
+      "clean": [["make", "-f", "makefile", "clean"]],
+      "sources": ["main.cu"],
+      "ast_owned_sources": ["main.cu", "define.c", "extract_kernel.cu", "prepare_kernel.cu", "reduce_kernel.cu", "srad_kernel.cu", "srad2_kernel.cu", "compress_kernel.cu", "graphics.c", "resize.c", "timer.c", "device.c"],
+      "include_dirs": ["."],
+      "static_flags": [],
+      "inputs": [
+        {"id": "image-502x458-10", "profile": "smoke", "args": ["10", "0.5", "502", "458"], "parameters": {"iterations": 10, "lambda": 0.5, "rows": 502, "columns": 458}},
+        {"id": "image-502x458-100", "profile": "official", "args": ["100", "0.5", "502", "458"], "parameters": {"iterations": 100, "lambda": 0.5, "rows": 502, "columns": 458}}
+      ]
+    },
+    {
+      "id": "srad_v2",
+      "workdir": "srad/srad_v2",
+      "executable": "srad",
+      "build": [["{nvcc}", "-O2", "-arch={cuda_arch}", "srad.cu", "-o", "srad"]],
+      "clean": [["make", "clean"]],
+      "sources": ["srad.cu"],
+      "ast_owned_sources": ["srad.cu", "srad_kernel.cu"],
+      "include_dirs": ["."],
+      "static_flags": [],
+      "inputs": [
+        {"id": "matrix-256", "profile": "smoke", "args": ["256", "256", "0", "127", "0", "127", "0.5", "2"], "parameters": {"rows": 256, "columns": 256, "roi": "0:127,0:127", "lambda": 0.5, "iterations": 2}},
+        {"id": "matrix-2048", "profile": "official", "args": ["2048", "2048", "0", "127", "0", "127", "0.5", "2"], "parameters": {"rows": 2048, "columns": 2048, "roi": "0:127,0:127", "lambda": 0.5, "iterations": 2}}
+      ]
+    },
+    {
+      "id": "streamcluster",
+      "workdir": "streamcluster",
+      "executable": "sc_gpu",
+      "build": [["{nvcc}", "-O3", "-arch={cuda_arch}", "-I{compat_include}", "streamcluster_cuda_cpu.cpp", "streamcluster_cuda.cu", "-lcuda", "-o", "sc_gpu"]],
+      "clean": [["make", "clean"]],
+      "sources": ["streamcluster_cuda_cpu.cpp", "streamcluster_cuda.cu"],
+      "ast_owned_sources": ["streamcluster_cuda_cpu.cpp", "streamcluster_cuda.cu", "streamcluster_header.cu"],
+      "include_dirs": [".", "../../../../scripts/compat_include"],
+      "static_flags": [],
+      "inputs": [
+        {"id": "synthetic-1000", "profile": "smoke", "args": ["3", "5", "16", "1000", "1000", "100", "none", "{null_device}", "1"], "parameters": {"kmin": 3, "kmax": 5, "dimensions": 16, "points": 1000, "chunksize": 100, "clusters": 1}},
+        {"id": "synthetic-65536", "profile": "official", "args": ["10", "20", "256", "65536", "65536", "1000", "none", "{null_device}", "1"], "parameters": {"kmin": 10, "kmax": 20, "dimensions": 256, "points": 65536, "chunksize": 1000, "clusters": 1}}
+      ]
+    }
+  ]
+}
