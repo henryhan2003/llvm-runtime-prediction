@@ -212,6 +212,51 @@ class GpuDeviceTests(unittest.TestCase):
         self.assertEqual(1, len(processes))
         self.assertEqual("22", processes[0]["pid"])
 
+    def test_conda_cuda_layout_uses_prefix_include_and_lib(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            prefix = Path(temp_dir)
+            (prefix / "include").mkdir()
+            (prefix / "include" / "cuda_runtime.h").touch()
+            (prefix / "lib").mkdir()
+            (prefix / "lib" / "libcudart.so").touch()
+
+            context = pipeline.token_context(
+                str(prefix / "bin" / "nvcc"), prefix, "sm_86"
+            )
+
+        self.assertEqual(str(prefix / "include"), context["cuda_include_dir"])
+        self.assertEqual(str(prefix / "lib"), context["cuda_lib_dir"])
+
+    def test_conda_prefix_is_preferred_over_resolved_nvcc_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            prefix = Path(temp_dir).resolve()
+            nvcc = prefix / "bin" / "nvcc"
+            with mock.patch.dict(pipeline.os.environ, {"CONDA_PREFIX": str(prefix)}):
+                self.assertEqual(prefix, pipeline.infer_cuda_dir(str(nvcc)))
+
+    def test_cuda_environment_exposes_selected_toolkit_paths(self) -> None:
+        context = {
+            "cuda_dir": "/opt/cuda",
+            "cuda_include_dir": "/opt/cuda/include",
+            "cuda_lib_dir": "/opt/cuda/lib64",
+        }
+        with mock.patch.dict(
+            pipeline.os.environ,
+            {"CPATH": "/other/include", "LD_LIBRARY_PATH": "/other/lib"},
+            clear=True,
+        ):
+            pipeline.configure_cuda_environment(context)
+            self.assertEqual("/opt/cuda", pipeline.os.environ["CUDA_HOME"])
+            self.assertEqual("/opt/cuda", pipeline.os.environ["CUDA_PATH"])
+            self.assertEqual(
+                ["/opt/cuda/include", "/other/include"],
+                pipeline.os.environ["CPATH"].split(pipeline.os.pathsep),
+            )
+            self.assertEqual(
+                ["/opt/cuda/lib64", "/other/lib"],
+                pipeline.os.environ["LD_LIBRARY_PATH"].split(pipeline.os.pathsep),
+            )
+
 
 class GpuMetricTests(unittest.TestCase):
     @staticmethod

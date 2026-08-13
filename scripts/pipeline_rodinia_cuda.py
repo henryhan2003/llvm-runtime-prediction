@@ -900,21 +900,69 @@ def collect_environment(
     return environment
 
 
+def _cuda_include_dir(cuda_dir: Path) -> Path:
+    candidates = [
+        cuda_dir / "include",
+        cuda_dir / "targets" / "x86_64-linux" / "include",
+    ]
+    for candidate in candidates:
+        if (candidate / "cuda_runtime.h").is_file():
+            return candidate
+    return next((candidate for candidate in candidates if candidate.is_dir()), candidates[0])
+
+
+def _cuda_library_dir(cuda_dir: Path) -> Path:
+    candidates = [
+        cuda_dir / "lib64",
+        cuda_dir / "lib",
+        cuda_dir / "targets" / "x86_64-linux" / "lib",
+        cuda_dir / "targets" / "x86_64-linux" / "lib64",
+    ]
+    for candidate in candidates:
+        if candidate.is_dir() and any(candidate.glob("libcudart.*")):
+            return candidate
+    return next((candidate for candidate in candidates if candidate.is_dir()), candidates[0])
+
+
+def infer_cuda_dir(nvcc_path: str) -> Path:
+    nvcc = Path(nvcc_path).absolute()
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        prefix = Path(conda_prefix).resolve()
+        try:
+            nvcc.relative_to(prefix)
+        except ValueError:
+            pass
+        else:
+            return prefix
+    return nvcc.resolve().parent.parent
+
+
 def token_context(nvcc: str, cuda_dir: Path, cuda_arch: str) -> dict[str, str]:
-    lib_dir = cuda_dir / "lib64"
-    if not lib_dir.is_dir():
-        target_lib = cuda_dir / "targets" / "x86_64-linux" / "lib"
-        if target_lib.is_dir():
-            lib_dir = target_lib
+    include_dir = _cuda_include_dir(cuda_dir)
+    lib_dir = _cuda_library_dir(cuda_dir)
     return {
         "null_device": "/dev/null",
         "nvcc": nvcc,
         "cuda_dir": str(cuda_dir),
-        "cuda_include_dir": str(cuda_dir / "include"),
+        "cuda_include_dir": str(include_dir),
         "cuda_lib_dir": str(lib_dir),
         "cuda_arch": cuda_arch,
         "compat_include": str(SCRIPT_DIR / "compat_include"),
     }
+
+
+def configure_cuda_environment(context: dict[str, str]) -> None:
+    cuda_dir = context["cuda_dir"]
+    os.environ["CUDA_HOME"] = cuda_dir
+    os.environ["CUDA_PATH"] = cuda_dir
+    for name, value in (
+        ("CPATH", context["cuda_include_dir"]),
+        ("LIBRARY_PATH", context["cuda_lib_dir"]),
+        ("LD_LIBRARY_PATH", context["cuda_lib_dir"]),
+    ):
+        existing = [item for item in os.environ.get(name, "").split(os.pathsep) if item]
+        os.environ[name] = os.pathsep.join([value, *[item for item in existing if item != value]])
 
 
 def expand_tokens(tokens: Iterable[str], context: dict[str, str]) -> list[str]:
@@ -1140,7 +1188,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cuda_dir is not None:
         cuda_dir = args.cuda_dir.resolve()
     elif shutil.which(args.nvcc):
-        cuda_dir = Path(shutil.which(args.nvcc) or args.nvcc).resolve().parent.parent
+        cuda_dir = infer_cuda_dir(shutil.which(args.nvcc) or args.nvcc)
     else:
         cuda_dir = Path("/usr/local/cuda")
 
@@ -1224,6 +1272,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     context = token_context(nvcc, cuda_dir, cuda_arch)
+    configure_cuda_environment(context)
     if args.dry_run:
         any_failure = False
         for spec in selected:
