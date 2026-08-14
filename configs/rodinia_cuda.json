@@ -69,7 +69,7 @@
       "clean": [["make", "clean"]],
       "sources": ["main.cu", "dwt.cu", "components.cu", "dwt_cuda/fdwt53.cu", "dwt_cuda/fdwt97.cu", "dwt_cuda/common.cu", "dwt_cuda/rdwt97.cu", "dwt_cuda/rdwt53.cu"],
       "include_dirs": [".", "dwt_cuda"],
-      "static_flags": ["-D_GNU_SOURCE"],
+      "static_flags": [],
       "inputs": [
         {"id": "gray-192", "profile": "smoke", "args": ["-d", "192x192", "-f", "-5", "-l", "3", "../../data/dwt2d/192.bmp"], "parameters": {"width": 192, "height": 192, "components": 1, "levels": 3, "wavelet": "5/3"}, "required_files": ["../../data/dwt2d/192.bmp"]},
         {"id": "rgb-1024", "profile": "official", "args": ["-d", "1024x1024", "-f", "-5", "-l", "3", "../../data/dwt2d/rgb.bmp"], "parameters": {"width": 1024, "height": 1024, "components": 3, "levels": 3, "wavelet": "5/3"}, "required_files": ["../../data/dwt2d/rgb.bmp"]}

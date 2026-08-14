@@ -162,7 +162,7 @@ main.o:	./common.h \
 			-O3
 
 ./util/cuda/cuda.o:	./common.h \
-					./util/cuda/cuda.h \
+					./util/cuda/rodinia_cuda_utils.h \
 					./util/cuda/cuda.cu
 	$(CUD_C)	./util/cuda/cuda.cu \
 				-c \

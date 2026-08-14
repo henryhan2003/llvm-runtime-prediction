@@ -1,8 +1,13 @@
 #ifndef CODEX_COMPAT_UNISTD_H
 #define CODEX_COMPAT_UNISTD_H
 
-/* Minimal compatibility shim for Clang AST/LLVM IR generation on Windows.
-   PolyBenchC includes <unistd.h>, but the benchmark kernels used here do not
-   require POSIX declarations for static representation extraction. */
+#ifdef _WIN32
+/* Windows has no POSIX unistd.h. The benchmark kernels that use this shim do
+   not require POSIX declarations while extracting static representations. */
+#else
+/* Do not shadow the real POSIX declarations when this compatibility directory
+   is present in a Linux compiler search path. */
+#include_next <unistd.h>
+#endif
 
 #endif

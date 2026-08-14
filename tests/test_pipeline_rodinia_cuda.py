@@ -147,9 +147,6 @@ class CudaManifestTests(unittest.TestCase):
         self.assertNotIn("max(1, numBlocks - np2LastBlock)", scan_source)
 
     def test_static_compatibility_flags_and_sources(self) -> None:
-        dwt2d = next(item for item in self.benchmarks if item.benchmark_id == "dwt2d")
-        self.assertIn("-D_GNU_SOURCE", dwt2d.static_flags)
-
         particle_dir = RODINIA_ROOT / "cuda" / "particlefilter"
         for name in (
             "ex_particle_CUDA_naive_seq.cu",
@@ -158,6 +155,27 @@ class CudaManifestTests(unittest.TestCase):
             source = (particle_dir / name).read_text(encoding="utf-8")
             self.assertIn("#include <time.h>", source)
             self.assertNotIn("<< <", source)
+
+    def test_linux_unistd_compatibility_header_forwards_to_system_header(self) -> None:
+        header = (SCRIPT_DIR / "compat_include" / "unistd.h").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("#ifdef _WIN32", header)
+        self.assertIn("#include_next <unistd.h>", header)
+
+    def test_btree_local_cuda_header_does_not_shadow_toolkit_header(self) -> None:
+        btree_root = RODINIA_ROOT / "cuda" / "b+tree"
+        old_header = btree_root / "util" / "cuda" / "cuda.h"
+        new_header = btree_root / "util" / "cuda" / "rodinia_cuda_utils.h"
+        self.assertFalse(old_header.exists())
+        self.assertTrue(new_header.is_file())
+        for relative in (
+            "util/cuda/cuda.cu",
+            "kernel/kernel_gpu_cuda_wrapper.cu",
+            "kernel/kernel_gpu_cuda_wrapper_2.cu",
+        ):
+            source = (btree_root / relative).read_text(encoding="utf-8")
+            self.assertIn("rodinia_cuda_utils.h", source)
 
     def test_enabled_sources_do_not_force_nonzero_cuda_device(self) -> None:
         cuda_root = RODINIA_ROOT / "cuda"
