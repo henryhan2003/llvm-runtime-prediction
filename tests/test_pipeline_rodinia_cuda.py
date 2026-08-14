@@ -137,6 +137,15 @@ class CudaManifestTests(unittest.TestCase):
         self.assertEqual(len(pipeline.SUMMARY_FIELDS), len(set(pipeline.SUMMARY_FIELDS)))
         self.assertEqual(len(pipeline.RUN_FIELDS), len(set(pipeline.RUN_FIELDS)))
 
+    def test_huffman_scan_uses_type_consistent_unsigned_max_arguments(self) -> None:
+        scan_source = (
+            RODINIA_ROOT / "cuda" / "huffman" / "scan.cu"
+        ).read_text(encoding="utf-8")
+        self.assertIn("max(1U, numEltsLastBlock / 2)", scan_source)
+        self.assertIn("max(1U, numBlocks - np2LastBlock)", scan_source)
+        self.assertNotIn("max(1, numEltsLastBlock / 2)", scan_source)
+        self.assertNotIn("max(1, numBlocks - np2LastBlock)", scan_source)
+
     def test_enabled_sources_do_not_force_nonzero_cuda_device(self) -> None:
         cuda_root = RODINIA_ROOT / "cuda"
         violations: list[str] = []

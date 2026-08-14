@@ -134,7 +134,7 @@ static void prescanArrayRecursive(unsigned int *outArray,
     // compute the smallest power of 2 able to compute its scan.
     unsigned int numEltsLastBlock = 
         numElements - (numBlocks-1) * numEltsPerBlock;
-    unsigned int numThreadsLastBlock = max(1, numEltsLastBlock / 2);
+    unsigned int numThreadsLastBlock = max(1U, numEltsLastBlock / 2);
     unsigned int np2LastBlock = 0;
     unsigned int sharedMemLastBlock = 0;
     
@@ -164,7 +164,7 @@ static void prescanArrayRecursive(unsigned int *outArray,
 
     // setup execution parameters
     // if NP2, we process the last block separately
-    dim3  grid(max(1, numBlocks - np2LastBlock), 1, 1); 
+    dim3  grid(max(1U, numBlocks - np2LastBlock), 1, 1);
     dim3  threads(numThreads, 1, 1);
 
     // make sure there are no CUDA errors before we start
