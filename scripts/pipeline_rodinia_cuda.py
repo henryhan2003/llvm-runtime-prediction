@@ -842,6 +842,33 @@ def empty_static(status: str) -> dict[str, Any]:
     return {**base.empty_static(status), **_zero_cuda_static()}
 
 
+def cuda_static_compiler_flags(
+    existing_flags: list[str], cuda_dir: Path, cuda_arch: str
+) -> list[str]:
+    # Keep the toolkit include directory ahead of project -I paths. Some legacy
+    # Rodinia projects have a local cuda.h that would otherwise shadow CUDA's.
+    return [
+        "-I",
+        str(_cuda_include_dir(cuda_dir)),
+        *existing_flags,
+        "-x",
+        "cuda",
+        f"--cuda-path={cuda_dir}",
+        f"--cuda-gpu-arch={cuda_arch}",
+        "--cuda-host-only",
+        "-nocudalib",
+        "--no-cuda-version-check",
+        "-Wno-unknown-cuda-version",
+    ]
+
+
+def llvm_ir_has_function_definitions(ir_path: Path) -> bool:
+    if not ir_path.is_file():
+        return False
+    text = ir_path.read_text(encoding="utf-8", errors="ignore")
+    return bool(re.search(r"^\s*define\b", text, flags=re.MULTILINE))
+
+
 def collect_static_features(
     spec: base.BenchmarkSpec,
     cuda_root: Path,
@@ -893,18 +920,7 @@ def collect_static_features(
             )
         )
         if is_cuda_translation_unit:
-            flags.extend(
-                [
-                    "-x",
-                    "cuda",
-                    f"--cuda-path={cuda_dir}",
-                    f"--cuda-gpu-arch={cuda_arch}",
-                    "--cuda-host-only",
-                    "-nocudalib",
-                    "--no-cuda-version-check",
-                    "-Wno-unknown-cuda-version",
-                ]
-            )
+            flags = cuda_static_compiler_flags(flags, cuda_dir, cuda_arch)
         source_ok = True
         try:
             ast_path, ast_ok, ast_error = core.generate_ast(
@@ -928,6 +944,9 @@ def collect_static_features(
             )
             if cfg_ok:
                 cfg_rows.append(core.extract_cfg_features(cfg_path))
+            elif ir_ok and not llvm_ir_has_function_definitions(ir_path):
+                # Data-only translation units legitimately produce no CFG dots.
+                pass
             else:
                 source_ok = False
                 errors.append(f"CFG {program.program_id}: {cfg_error}")
@@ -997,6 +1016,16 @@ def _full_version(executable: str) -> str:
     return (result.stdout or result.stderr).strip()
 
 
+def resolved_compute_capability(device: GpuDevice, cuda_arch: str) -> str:
+    if device.compute_capability:
+        return device.compute_capability
+    match = re.fullmatch(r"sm_(\d{2,3})", cuda_arch.lower())
+    if not match:
+        return ""
+    digits = match.group(1)
+    return f"{digits[:-1]}.{digits[-1]}"
+
+
 def collect_environment(
     c_compiler: str,
     cxx_compiler: str,
@@ -1020,7 +1049,7 @@ def collect_environment(
             "gpu_runtime_index": 0,
             "gpu_uuid": device.uuid,
             "gpu_name": device.name,
-            "gpu_compute_capability": device.compute_capability,
+            "gpu_compute_capability": resolved_compute_capability(device, cuda_arch),
             "gpu_total_memory_bytes": device.total_memory_bytes,
             "gpu_driver_version": device.driver_version,
             "gpu_power_limit_watts": device.power_limit_watts or "",
@@ -1404,7 +1433,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
         print(
             f"[gpu] physical={device.physical_index}, runtime=0, name={device.name}, "
-            f"compute_capability={device.compute_capability}, arch={cuda_arch}"
+            f"compute_capability={resolved_compute_capability(device, cuda_arch)}, "
+            f"arch={cuda_arch}"
         )
 
     context = token_context(nvcc, cuda_dir, cuda_arch)

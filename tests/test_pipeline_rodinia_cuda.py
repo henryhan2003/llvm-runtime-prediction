@@ -146,6 +146,19 @@ class CudaManifestTests(unittest.TestCase):
         self.assertNotIn("max(1, numEltsLastBlock / 2)", scan_source)
         self.assertNotIn("max(1, numBlocks - np2LastBlock)", scan_source)
 
+    def test_static_compatibility_flags_and_sources(self) -> None:
+        dwt2d = next(item for item in self.benchmarks if item.benchmark_id == "dwt2d")
+        self.assertIn("-D_GNU_SOURCE", dwt2d.static_flags)
+
+        particle_dir = RODINIA_ROOT / "cuda" / "particlefilter"
+        for name in (
+            "ex_particle_CUDA_naive_seq.cu",
+            "ex_particle_CUDA_float_seq.cu",
+        ):
+            source = (particle_dir / name).read_text(encoding="utf-8")
+            self.assertIn("#include <time.h>", source)
+            self.assertNotIn("<< <", source)
+
     def test_enabled_sources_do_not_force_nonzero_cuda_device(self) -> None:
         cuda_root = RODINIA_ROOT / "cuda"
         violations: list[str] = []
@@ -223,8 +236,13 @@ class GpuDeviceTests(unittest.TestCase):
     def test_explicit_arch_works_without_nvidia_smi_compute_capability(self) -> None:
         device = pipeline.GpuDevice(0, "GPU-x", "test", "", 0, "", None)
         self.assertEqual("sm_86", pipeline.resolve_cuda_arch("sm_86", device))
+        self.assertEqual("8.6", pipeline.resolved_compute_capability(device, "sm_86"))
         with self.assertRaisesRegex(ValueError, "does not expose compute capability"):
             pipeline.resolve_cuda_arch("auto", device)
+
+    def test_nvidia_smi_compute_capability_takes_precedence(self) -> None:
+        device = pipeline.GpuDevice(0, "GPU-x", "test", "8.9", 0, "", None)
+        self.assertEqual("8.9", pipeline.resolved_compute_capability(device, "sm_86"))
 
     def test_cuda12_texture_reference_benchmarks_are_detected(self) -> None:
         benchmarks = pipeline.base.load_manifest(MANIFEST_PATH)
@@ -432,6 +450,24 @@ class CudaStaticFeatureTests(unittest.TestCase):
             paths = pipeline._parse_cxx_include_search_paths(output)
 
         self.assertEqual((str(first), str(second)), paths)
+
+    def test_cuda_toolkit_include_precedes_project_include_paths(self) -> None:
+        flags = pipeline.cuda_static_compiler_flags(
+            ["-I", "/project/include"], Path("/opt/cuda"), "sm_86"
+        )
+        self.assertEqual(["-I", str(Path("/opt/cuda") / "include")], flags[:2])
+        self.assertLess(
+            flags.index(str(Path("/opt/cuda") / "include")),
+            flags.index("/project/include"),
+        )
+
+    def test_data_only_llvm_ir_has_no_function_definitions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ir_path = Path(directory) / "data_only.ll"
+            ir_path.write_text("@value = global i1 false\n", encoding="utf-8")
+            self.assertFalse(pipeline.llvm_ir_has_function_definitions(ir_path))
+            ir_path.write_text("define void @run() { ret void }\n", encoding="utf-8")
+            self.assertTrue(pipeline.llvm_ir_has_function_definitions(ir_path))
 
     def test_cuda_source_feature_counts(self) -> None:
         source = r"""
