@@ -364,6 +364,66 @@ class GpuMetricTests(unittest.TestCase):
 
 
 class CudaStaticFeatureTests(unittest.TestCase):
+    def setUp(self) -> None:
+        pipeline.cxx_standard_library_flags.cache_clear()
+
+    def tearDown(self) -> None:
+        pipeline.cxx_standard_library_flags.cache_clear()
+
+    def test_cxx_header_probe_uses_host_gcc_toolchain_when_needed(self) -> None:
+        missing_headers = pipeline.subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="fatal error: 'cmath' file not found",
+        )
+        success = pipeline.subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+        with (
+            mock.patch.object(
+                pipeline,
+                "_probe_cxx_headers",
+                side_effect=[missing_headers, success],
+            ) as probe,
+            mock.patch.object(pipeline.shutil, "which", return_value="/usr/bin/g++"),
+            mock.patch.object(
+                pipeline, "_gcc_toolchain_root", return_value=Path("/usr")
+            ),
+        ):
+            flags, error = pipeline.cxx_standard_library_flags("clang++")
+
+        self.assertEqual(("--gcc-toolchain=/usr",), flags)
+        self.assertEqual("", error)
+        probe.assert_has_calls(
+            [
+                mock.call("clang++"),
+                mock.call("clang++", ("--gcc-toolchain=/usr",)),
+            ]
+        )
+
+    def test_cxx_include_search_parser_keeps_existing_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "c++"
+            second = root / "target"
+            first.mkdir()
+            second.mkdir()
+            output = (
+                '#include "..." search starts here:\n'
+                "#include <...> search starts here:\n"
+                f" {first}\n"
+                " ignoring nonexistent directory /missing\n"
+                f" {second}\n"
+                "End of search list.\n"
+            )
+            paths = pipeline._parse_cxx_include_search_paths(output)
+
+        self.assertEqual((str(first), str(second)), paths)
+
     def test_cuda_source_feature_counts(self) -> None:
         source = r"""
         __constant__ int c[4];

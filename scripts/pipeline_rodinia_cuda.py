@@ -23,6 +23,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -229,14 +230,121 @@ def _float_or_none(value: str) -> float | None:
         return None
 
 
-def _run_text(command: list[str], timeout: float = 10.0) -> subprocess.CompletedProcess[str]:
+def _run_text(
+    command: list[str],
+    timeout: float = 10.0,
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
         capture_output=True,
+        input=input_text,
         text=True,
         encoding="utf-8",
         errors="replace",
         timeout=timeout,
+    )
+
+
+CXX_HEADER_PROBE = "#include <cmath>\n#include <iostream>\nint main() { return 0; }\n"
+
+
+def _probe_cxx_headers(
+    cxx_compiler: str,
+    extra_flags: Iterable[str] = (),
+) -> subprocess.CompletedProcess[str]:
+    return _run_text(
+        [
+            cxx_compiler,
+            *extra_flags,
+            "-x",
+            "c++",
+            "-fsyntax-only",
+            "-",
+        ],
+        input_text=CXX_HEADER_PROBE,
+    )
+
+
+def _gcc_toolchain_root(gxx_path: str) -> Path | None:
+    path = Path(gxx_path).resolve()
+    if path.parent.name != "bin":
+        return None
+    return path.parent.parent
+
+
+def _parse_cxx_include_search_paths(output: str) -> tuple[str, ...]:
+    paths: list[str] = []
+    in_search_list = False
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if line.startswith("#include") and "search starts here:" in line:
+            in_search_list = True
+            continue
+        if not in_search_list:
+            continue
+        if line == "End of search list.":
+            break
+        if not line or line.startswith("ignoring "):
+            continue
+        path = line.removesuffix(" (framework directory)").strip()
+        if Path(path).is_dir() and path not in paths:
+            paths.append(path)
+    return tuple(paths)
+
+
+@lru_cache(maxsize=8)
+def cxx_standard_library_flags(cxx_compiler: str) -> tuple[tuple[str, ...], str]:
+    """Find flags that let Clang consume the host libstdc++ headers."""
+
+    try:
+        initial = _probe_cxx_headers(cxx_compiler)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return (), f"CXX_STDLIB: could not probe {cxx_compiler}: {exc}"
+    if initial.returncode == 0:
+        return (), ""
+
+    gxx = shutil.which("g++")
+    if gxx:
+        toolchain_root = _gcc_toolchain_root(gxx)
+        if toolchain_root is not None:
+            toolchain_flags = (f"--gcc-toolchain={toolchain_root.as_posix()}",)
+            try:
+                if _probe_cxx_headers(cxx_compiler, toolchain_flags).returncode == 0:
+                    return toolchain_flags, ""
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+        try:
+            include_query = _run_text(
+                [gxx, "-E", "-x", "c++", "-", "-v"],
+                input_text="",
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            include_query = None
+        if include_query is not None:
+            include_paths = _parse_cxx_include_search_paths(
+                "\n".join((include_query.stdout, include_query.stderr))
+            )
+            include_flags = tuple(
+                item
+                for path in include_paths
+                for item in ("-isystem", path)
+            )
+            if include_flags:
+                try:
+                    if _probe_cxx_headers(cxx_compiler, include_flags).returncode == 0:
+                        return include_flags, ""
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+
+    diagnostic = (initial.stderr or initial.stdout).strip().replace("\n", " ")
+    if len(diagnostic) > 500:
+        diagnostic = diagnostic[-500:]
+    return (
+        (),
+        "CXX_STDLIB: the representation compiler cannot locate the host C++ "
+        f"standard-library headers: {diagnostic or 'probe failed'}",
     )
 
 
@@ -759,11 +867,12 @@ def collect_static_features(
     common_flags = list(spec.static_flags)
     for include_dir in spec.include_dirs:
         common_flags.extend(["-I", str((workdir / include_dir).resolve())])
+    cxx_stdlib_flags, cxx_stdlib_error = cxx_standard_library_flags(cxx_compiler)
 
     ast_rows: list[dict[str, Any]] = []
     cfg_rows: list[dict[str, Any]] = []
     ir_rows: list[dict[str, Any]] = []
-    errors: list[str] = []
+    errors: list[str] = [cxx_stdlib_error] if cxx_stdlib_error else []
     source_success_count = 0
     for relative_source in spec.sources:
         source_path = (workdir / relative_source).resolve()
@@ -773,6 +882,8 @@ def collect_static_features(
         program = core.Program(source_path=source_path, source_root=cuda_root)
         owned_paths = ownership.get(source_path, [source_path])
         flags = list(common_flags)
+        if program.language == "C++":
+            flags.extend(cxx_stdlib_flags)
         source_text = source_path.read_text(encoding="utf-8", errors="ignore")
         is_cuda_translation_unit = (
             source_path.suffix.lower() == ".cu"
@@ -1369,6 +1480,17 @@ def main(argv: list[str] | None = None) -> int:
                 cuda_dir,
                 cuda_arch,
             )
+            print(
+                f"[static] {spec.benchmark_id}: status={static_features['static_status']}, "
+                f"sources={static_features['static_source_success_count']}/"
+                f"{static_features['static_source_count']}"
+            )
+            if static_errors:
+                print(
+                    f"[static] warning for {spec.benchmark_id}: "
+                    f"{len(static_errors)} issue(s); details are recorded in the summary",
+                    file=sys.stderr,
+                )
         else:
             static_features = collect_cuda_source_features_only(
                 spec, cuda_root, "generic_llvm_not_requested"
@@ -1564,11 +1686,15 @@ def main(argv: list[str] | None = None) -> int:
                 and not args.build_only
                 and not row.get("prometheus_three_phase_collection_success")
             )
+            static_failed = (
+                args.collect_static and row.get("static_status") != "success"
+            )
             if (
                 not build_success
                 or (not args.build_only and not row.get("run_success"))
                 or metrics_failed
                 or host_metrics_failed
+                or static_failed
             ):
                 any_failure = True
 
