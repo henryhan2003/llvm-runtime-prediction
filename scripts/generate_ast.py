@@ -1,4 +1,4 @@
-from pipeline import main
+from pipeline_new import main
 
 
 if __name__ == "__main__":
