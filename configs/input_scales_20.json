@@ -36357,7 +36357,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_01.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -36378,14 +36378,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 65536,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_01.bin",
           "bytes": 65536,
-          "sha256": "88bdbb1dcc4179ac72f90e66d24ba775ae40b567ddce52bb3858195d6e771896"
+          "sha256": "c4426fff700e7b99c08819e668d30b4f78d3b0a11db5194f95edb9b20bd88049"
         }
       ]
     },
@@ -36401,7 +36401,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_02.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -36422,14 +36422,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 79872,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_02.bin",
           "bytes": 79872,
-          "sha256": "dcd4f11fde885b8cd69ec548559a4cf56646246b0a58d75e54a9d7497ed3b44c"
+          "sha256": "e80369c4d8c2dffd7104859b6498ed8c795cce78191e0e3176461a37356d29e8"
         }
       ]
     },
@@ -36445,7 +36445,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_03.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -36466,14 +36466,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 97280,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_03.bin",
           "bytes": 97280,
-          "sha256": "96363e65ca6cf4d7b34835e18709a96c2b28181380cafdeefd60d355574afa92"
+          "sha256": "6ce5b7341bdfb9273ae7a2acdf25731774933c3b135ab447d7ff0430f3e5716d"
         }
       ]
     },
@@ -36489,7 +36489,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_04.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -36510,14 +36510,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 118784,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_04.bin",
           "bytes": 118784,
-          "sha256": "17cb4e9d77efca4824083bbba48c640ba792d65e61b4fc7a6cf7d888bd6599e5"
+          "sha256": "ce145508f18add5f40fec695952f4bc40e4f8f6fb4bd4f4c82be37dbe51e0551"
         }
       ]
     },
@@ -36533,7 +36533,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_05.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -36554,14 +36554,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 144384,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_05.bin",
           "bytes": 144384,
-          "sha256": "53e01edf9f03316d1392010af85b6bfdc484a6234cca7de3868f75ede29c378b"
+          "sha256": "c178417822f95a072327ed26713ee5c9f992c58e31edb59171d3eb208596246f"
         }
       ]
     },
@@ -36577,7 +36577,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_06.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -36598,14 +36598,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 176128,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_06.bin",
           "bytes": 176128,
-          "sha256": "35079ac75809bddd395aeac2b72be24947cc4a84e7dbe193783e8befa88ef559"
+          "sha256": "d4826430e082968fc7f6f0a16e4e800ee382cf9badeead32e085dadd9837f004"
         }
       ]
     },
@@ -36621,7 +36621,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_07.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -36642,14 +36642,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 215040,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_07.bin",
           "bytes": 215040,
-          "sha256": "a407a2d1a4fee2f0e175b66aeb83581e62f5789ccd5342c029665d7816ee4963"
+          "sha256": "e41ab717bf5ebc3cde9b3c532c0fab93caf2ce1525d443a6925178d1a2bb10b5"
         }
       ]
     },
@@ -36665,7 +36665,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_08.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -36686,14 +36686,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 262144,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_08.bin",
           "bytes": 262144,
-          "sha256": "e900bd2444ae24623be2f5e13cd38331787ffb160ed1754d33428396664265cb"
+          "sha256": "5e005fd3837372037e95805ac91cc72df4762e2d343ac72ccd5d9d6fdd27f740"
         }
       ]
     },
@@ -36709,7 +36709,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_09.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -36730,14 +36730,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 319488,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_09.bin",
           "bytes": 319488,
-          "sha256": "48345f8afd90b2f3bd223c637c03018ca1feb6113727c098df225e2a2d6a44c9"
+          "sha256": "961fb7ce14e54013c2b5af69cc657f2a051eaf9a2de713ee6379d368dc67c23e"
         }
       ]
     },
@@ -36753,7 +36753,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_10.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -36774,14 +36774,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 389120,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_10.bin",
           "bytes": 389120,
-          "sha256": "958edd4718482d25e854e7537b9ecd0505dee519fbbd5181e35f91580bb9cbaf"
+          "sha256": "78c0c9164a579b167b14dfb95020cdc9a64c9578e85d0e952bd04af961d08a37"
         }
       ]
     },
@@ -36797,7 +36797,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_11.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -36818,14 +36818,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 475136,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_11.bin",
           "bytes": 475136,
-          "sha256": "fba8478f6d0b8ab35245e45be0c6f756f552c2052ff0c72b31f452a7e4c7a4a4"
+          "sha256": "542217729357b02fa0381f24ef4b3adb203a7733ee8483cb7f7557426002d558"
         }
       ]
     },
@@ -36841,7 +36841,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_12.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -36862,14 +36862,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 578560,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_12.bin",
           "bytes": 578560,
-          "sha256": "90680570170e1d297d88e0ef5e062dc4275bde3a0660c50d9da057720a352ba8"
+          "sha256": "e67f923cfcb68598c2a7e6fd2cee0baafba2fd3c5e1bec9d90be524ce7e0f80c"
         }
       ]
     },
@@ -36885,7 +36885,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_13.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -36906,14 +36906,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 705536,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_13.bin",
           "bytes": 705536,
-          "sha256": "758be07c8a57462491350bcbf2fc1e94e9d6571e392176670a2708fe98e0d8c7"
+          "sha256": "7eabfd622817f56c226c611843e4b821467ac3a7abf1ba1aa64390eb971cb043"
         }
       ]
     },
@@ -36929,7 +36929,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_14.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -36950,14 +36950,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 860160,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_14.bin",
           "bytes": 860160,
-          "sha256": "d7aa417cfea30aac19a80ce4e0eb9664c70394e6948ad746aff91972c7570aa1"
+          "sha256": "9c3c5e0ffa8e2298f48aac4f7cec9f9061e41f9eb7477bf056d6e136aed941c7"
         }
       ]
     },
@@ -36973,7 +36973,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_15.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -36994,14 +36994,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "test1024_H2.206587175259.in",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 1048576,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_15.bin",
           "bytes": 1048576,
-          "sha256": "96e4413a411d650166109f127fc990fad784696f5c46242b1f76238e673ce45b"
+          "sha256": "813b542f2dfabf07500689b17553a2eff0bb882dce3c56ba28e03496b6301599"
         }
       ]
     },
@@ -37017,7 +37017,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_16.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -37038,14 +37038,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 1589248,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_16.bin",
           "bytes": 1589248,
-          "sha256": "22c010d21c84ea0e90c94a1beb7b028962047b3a1b6db6e49ef46291e3b04325"
+          "sha256": "de5c3612de14433af541aec796fa695bf53af68cdf16888ac872300c3cf1d26d"
         }
       ]
     },
@@ -37061,7 +37061,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_17.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -37082,14 +37082,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 2409472,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_17.bin",
           "bytes": 2409472,
-          "sha256": "8a24378cbbca3f7637b8d2a874e559c1ef11eaf1dcdfe9941961689858434108"
+          "sha256": "9252de0d56f42fff8e2f9003735efa2b3222ffedd8d2a6b0cf8c955d53790d6e"
         }
       ]
     },
@@ -37105,7 +37105,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_18.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -37126,14 +37126,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 3651584,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_18.bin",
           "bytes": 3651584,
-          "sha256": "96ddcc3d529cd878b834e9634bb16c473ad7138186365e550c2f92339a431776"
+          "sha256": "9ead8ccaa5cb366af16d9b46ce5b5b7e521c0c0e2ce798594f41b2505f38d0c5"
         }
       ]
     },
@@ -37149,7 +37149,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_19.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -37170,14 +37170,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 5534720,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_19.bin",
           "bytes": 5534720,
-          "sha256": "f629f37012427cbb9c536e96c3110d60c1931c112514a1e0e1c3756eb9575d94"
+          "sha256": "633c401401ac48108c99a36b2bcffcb773e4b726f641386e57c828eccedd89a2"
         }
       ]
     },
@@ -37193,7 +37193,7 @@
       "input_file_paths": [
         "../../data/generated_20/huffman/input_SIZE_20.bin"
       ],
-      "generation_method": "generated_seeded_binary",
+      "generation_method": "generated_repeated_reference_corpus",
       "compile_config": [
         [
           "{nvcc}",
@@ -37214,14 +37214,14 @@
       "original_config": false,
       "original_reference": "",
       "original_parameter_anchor": "",
-      "random_seed": 20261020,
+      "random_seed": null,
       "workload_proxy": 8388608,
       "thread_count": null,
       "generated_files": [
         {
           "path": "datasets/rodinia_3.1/data/generated_20/huffman/input_SIZE_20.bin",
           "bytes": 8388608,
-          "sha256": "50b54250f0207a4c6726a3b0545802b34ee836ba19ae1d0fd58dfe121cc80369"
+          "sha256": "7ea7e75a21dbeaf91f8879308b6d6b485ddf58e3a27f7459d79fbc3ba634fbd6"
         }
       ]
     },

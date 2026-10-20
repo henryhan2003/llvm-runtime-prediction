@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import heapq
 import json
 import os
 import shutil
@@ -116,6 +117,25 @@ def check_generated_file(entry: dict[str, Any], path: Path) -> list[str]:
         expected = int(parameters["input_bytes"])
         if size != expected:
             errors.append(f"{name}: binary bytes {size} != {expected}")
+        frequencies = [0] * 256
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                for value in chunk:
+                    frequencies[value] += 1
+        heap = [count for count in frequencies if count]
+        heapq.heapify(heap)
+        encoded_bits = 0
+        while len(heap) > 1:
+            left = heapq.heappop(heap)
+            right = heapq.heappop(heap)
+            encoded_bits += left + right
+            heapq.heappush(heap, left + right)
+        encoded_bytes = (encoded_bits + 7) // 8
+        if encoded_bytes + 4 > size:
+            errors.append(
+                f"{name}: estimated Huffman output {encoded_bytes} bytes leaves no room "
+                "for the legacy encoder sentinel"
+            )
     return errors
 
 

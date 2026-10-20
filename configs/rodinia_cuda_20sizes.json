@@ -4763,11 +4763,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_01.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 65536
         },
         {
@@ -4784,11 +4784,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_02.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 79872
         },
         {
@@ -4805,11 +4805,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_03.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 97280
         },
         {
@@ -4826,11 +4826,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_04.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 118784
         },
         {
@@ -4847,11 +4847,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_05.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 144384
         },
         {
@@ -4868,11 +4868,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_06.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 176128
         },
         {
@@ -4889,11 +4889,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_07.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 215040
         },
         {
@@ -4910,11 +4910,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_08.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 262144
         },
         {
@@ -4931,11 +4931,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_09.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 319488
         },
         {
@@ -4952,11 +4952,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_10.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 389120
         },
         {
@@ -4973,11 +4973,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_11.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 475136
         },
         {
@@ -4994,11 +4994,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_12.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 578560
         },
         {
@@ -5015,11 +5015,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_13.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 705536
         },
         {
@@ -5036,11 +5036,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_14.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 860160
         },
         {
@@ -5057,11 +5057,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_15.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "test1024_H2.206587175259.in",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 1048576
         },
         {
@@ -5078,11 +5078,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_16.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 1589248
         },
         {
@@ -5099,11 +5099,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_17.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 2409472
         },
         {
@@ -5120,11 +5120,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_18.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 3651584
         },
         {
@@ -5141,11 +5141,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_19.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 5534720
         },
         {
@@ -5162,11 +5162,11 @@
           "required_files": [
             "../../data/generated_20/huffman/input_SIZE_20.bin"
           ],
-          "generation_method": "generated_seeded_binary",
+          "generation_method": "generated_repeated_reference_corpus",
           "original_config": false,
           "original_reference": "",
           "original_parameter_anchor": "",
-          "random_seed": 20261020,
+          "random_seed": null,
           "workload_proxy": 8388608
         }
       ]

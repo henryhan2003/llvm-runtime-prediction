@@ -24,6 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 POLYBENCH_ROOT = PROJECT_ROOT / "datasets" / "PolyBenchC-4.2.1"
 RODINIA_ROOT = PROJECT_ROOT / "datasets" / "rodinia_3.1"
 GENERATED_DATA_ROOT = RODINIA_ROOT / "data" / "generated_20"
+HUFFMAN_REFERENCE = RODINIA_ROOT / "data" / "huffman" / "test1024_H2.206587175259.in"
 OPENMP_SOURCE_MANIFEST = PROJECT_ROOT / "configs" / "rodinia_openmp.json"
 CUDA_SOURCE_MANIFEST = PROJECT_ROOT / "configs" / "rodinia_cuda.json"
 OPENMP_OUTPUT_MANIFEST = PROJECT_ROOT / "configs" / "rodinia_openmp_20sizes.json"
@@ -524,7 +525,7 @@ def build_cuda_inputs(program_id: str, vectors: dict[str, Any]) -> list[dict[str
     elif program_id == "huffman":
         for i, byte_count in enumerate(vectors["huffman_bytes"]):
             path = generated_relative("huffman", f"input_{SIZE_IDS[i]}.bin")
-            result.append(input_spec(i, [path], {"input_bytes": byte_count, "block_threads": 256}, required_files=[path], generation_method="generated_seeded_binary", workload_proxy=byte_count, original_reference=original_at(i, {14: "test1024_H2.206587175259.in"})))
+            result.append(input_spec(i, [path], {"input_bytes": byte_count, "block_threads": 256}, required_files=[path], generation_method="generated_repeated_reference_corpus", seed=None, workload_proxy=byte_count, original_reference=original_at(i, {14: "test1024_H2.206587175259.in"})))
     elif program_id == "lavaMD":
         for i, boxes in enumerate(vectors["lavamd_boxes"]):
             params = {"boxes1d": boxes, "boxes_total": boxes**3, "particles_per_box": 100}
@@ -739,17 +740,21 @@ def generate_dwt(vectors: dict[str, Any], seed: int) -> None:
                 remaining -= count
 
 
-def generate_huffman(vectors: dict[str, Any], seed: int) -> None:
+def generate_huffman(vectors: dict[str, Any]) -> None:
+    reference = HUFFMAN_REFERENCE.read_bytes()
+    if not reference:
+        raise ValueError(f"empty Huffman reference corpus: {HUFFMAN_REFERENCE}")
     for i, byte_count in enumerate(vectors["huffman_bytes"]):
         path = generated_absolute("huffman", f"input_{SIZE_IDS[i]}.bin")
         path.parent.mkdir(parents=True, exist_ok=True)
-        rng = random.Random(seed + i)
         remaining = byte_count
+        offset = 0
         with path.open("wb") as stream:
             while remaining:
-                count = min(1024 * 1024, remaining)
-                stream.write(rng.randbytes(count))
+                count = min(len(reference) - offset, remaining)
+                stream.write(reference[offset : offset + count])
                 remaining -= count
+                offset = (offset + count) % len(reference)
 
 
 def materialize_generated_data(vectors: dict[str, Any], seed: int) -> None:
@@ -762,7 +767,7 @@ def materialize_generated_data(vectors: dict[str, Any], seed: int) -> None:
         lambda value: generate_kmeans(value, seed),
         lambda value: generate_nn(value, seed),
         lambda value: generate_dwt(value, seed),
-        lambda value: generate_huffman(value, seed),
+        generate_huffman,
     )
     for generator in generators:
         generator(vectors)
@@ -892,9 +897,16 @@ def render_implementation_report(entries: list[dict[str, Any]], materialized: bo
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--materialize", action="store_true", help="Generate Rodinia input files, including large files.")
+    parser.add_argument(
+        "--materialize-huffman-only",
+        action="store_true",
+        help="Regenerate only the 20 deterministic Huffman inputs.",
+    )
     parser.add_argument("--no-polybench-header-update", action="store_true", help="Do not update PolyBench headers.")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     args = parser.parse_args()
+    if args.materialize and args.materialize_huffman_only:
+        parser.error("use either --materialize or --materialize-huffman-only")
 
     vectors = common_scale_vectors()
     polybench_rows, _ = polybench_entries(apply_headers=not args.no_polybench_header_update)
@@ -905,6 +917,8 @@ def main() -> int:
 
     if args.materialize:
         materialize_generated_data(vectors, args.seed)
+    elif args.materialize_huffman_only:
+        generate_huffman(vectors)
 
     rows = [
         *polybench_rows,
