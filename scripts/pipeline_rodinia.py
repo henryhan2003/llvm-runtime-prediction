@@ -1347,7 +1347,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--benchmark", action="append", default=[], help="Benchmark id; repeat or use commas.")
     parser.add_argument("--all", action="store_true", help="Run every enabled benchmark.")
     parser.add_argument("--list", action="store_true", help="List the manifest and exit.")
-    parser.add_argument("--input-profile", choices=("smoke", "official", "all"), default="smoke")
+    parser.add_argument(
+        "--input-profile",
+        default="smoke",
+        help="Input profile id (for example smoke, official, SIZE_01..SIZE_20) or all.",
+    )
     parser.add_argument("--warmup", type=int, default=1, help="Warmup run count; use 5 for formal collection.")
     parser.add_argument("--runs", type=int, default=5, help="Measured runs when --measurement-seconds is 0.")
     parser.add_argument("--measurement-seconds", type=float, default=10.0)

@@ -1,0 +1,757 @@
+{
+  "status": "pass",
+  "summary": {
+    "entry_count": 1420,
+    "program_count": 71,
+    "programs_by_dataset": {
+      "PolyBench/C": 30,
+      "Rodinia OpenMP": 19,
+      "Rodinia CUDA": 22
+    },
+    "entries_by_dataset": {
+      "PolyBench/C": 600,
+      "Rodinia OpenMP": 380,
+      "Rodinia CUDA": 440
+    },
+    "generated_file_count": 260,
+    "generated_bytes": 1994043397,
+    "duplicate_parameter_groups": 0,
+    "monotonic_exceptions": [
+      "PolyBench/C/atax",
+      "PolyBench/C/bicg"
+    ]
+  },
+  "errors": [],
+  "warnings": [
+    "PolyBench/C/atax: upstream LARGE/EXTRALARGE dimensions are not workload-monotonic",
+    "PolyBench/C/bicg: upstream LARGE/EXTRALARGE dimensions are not workload-monotonic"
+  ],
+  "polybench_spot_checks": [
+    {
+      "program_id": "2mm",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "2mm",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "2mm",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "3mm",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "3mm",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "3mm",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "adi",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "adi",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "adi",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "atax",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "atax",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "atax",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "bicg",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "bicg",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "bicg",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "cholesky",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "cholesky",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "cholesky",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "correlation",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "correlation",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "correlation",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "covariance",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "covariance",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "covariance",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "deriche",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "deriche",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "deriche",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "doitgen",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "doitgen",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "doitgen",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "durbin",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "durbin",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "durbin",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "fdtd-2d",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "fdtd-2d",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "fdtd-2d",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "floyd-warshall",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "floyd-warshall",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "floyd-warshall",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "gemm",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "gemm",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "gemm",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "gemver",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "gemver",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "gemver",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "gesummv",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "gesummv",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "gesummv",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "gramschmidt",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "gramschmidt",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "gramschmidt",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "heat-3d",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "heat-3d",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "heat-3d",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "jacobi-1d",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "jacobi-1d",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "jacobi-1d",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "jacobi-2d",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "jacobi-2d",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "jacobi-2d",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "lu",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "lu",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "lu",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "ludcmp",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "ludcmp",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "ludcmp",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "mvt",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "mvt",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "mvt",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "nussinov",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "nussinov",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "nussinov",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "seidel-2d",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "seidel-2d",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "seidel-2d",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "symm",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "symm",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "symm",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "syr2k",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "syr2k",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "syr2k",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "syrk",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "syrk",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "syrk",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "trisolv",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "trisolv",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "trisolv",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "trmm",
+      "size_id": "SIZE_01",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "trmm",
+      "size_id": "SIZE_10",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "program_id": "trmm",
+      "size_id": "SIZE_20",
+      "compile_status": "pass",
+      "compile_error": "",
+      "run_status": "not_run_environment_unavailable",
+      "run_error": "E:\\Dareway\\LLVM_v01\\datasets\\PolyBenchC-4.2.1\\utilities\\polybench.c:18:10: fatal error: 'sys/time.h' file not found\n   18 | #include <sys/time.h>\n      |          ^~~~~~~~~~~~\n1 error generated.\n"
+    }
+  ],
+  "rodinia_runtime": {
+    "status": "not_run_environment_unavailable",
+    "reason": "No installed WSL Linux distribution, make, or nvcc on the current Windows host.",
+    "openmp_example": "python scripts/pipeline_rodinia.py --manifest configs/rodinia_openmp_20sizes.json --benchmark bfs --input-profile SIZE_01 --warmup 0 --runs 1 --measurement-seconds 0",
+    "cuda_example": "python scripts/pipeline_rodinia_cuda.py --manifest configs/rodinia_cuda_20sizes.json --benchmark bfs --input-profile SIZE_01 --warmup 0 --runs 1 --measurement-seconds 0"
+  }
+}

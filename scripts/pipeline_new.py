@@ -58,6 +58,8 @@ POLYBENCH_DATASET_PROFILES = (
     "LARGE_DATASET",
     "EXTRALARGE_DATASET",
 )
+POLYBENCH_SIZE_PROFILES = tuple(f"SIZE_{index:02d}" for index in range(1, 21))
+POLYBENCH_PROFILE_SELECTORS = POLYBENCH_DATASET_PROFILES + POLYBENCH_SIZE_PROFILES
 
 
 PIPELINE_RUNNING = Gauge(
@@ -1580,7 +1582,7 @@ def compiler_defines(extra_flags: Iterable[str]) -> dict[str, str]:
 def polybench_profile_definitions(header_text: str) -> dict[str, dict[str, str]]:
     clean_text = strip_c_comments(header_text)
     profiles: dict[str, dict[str, str]] = {}
-    for profile in POLYBENCH_DATASET_PROFILES:
+    for profile in POLYBENCH_PROFILE_SELECTORS:
         block_match = re.search(
             rf"^\s*#\s*ifdef\s+{profile}\b(?P<body>.*?)^\s*#\s*endif\b",
             clean_text,
@@ -1600,7 +1602,7 @@ def available_polybench_profiles(program: Program) -> tuple[str, ...]:
         return ()
     header_text = header_path.read_text(encoding="utf-8", errors="ignore")
     profiles = polybench_profile_definitions(header_text)
-    return tuple(profile for profile in POLYBENCH_DATASET_PROFILES if profile in profiles)
+    return tuple(profile for profile in POLYBENCH_PROFILE_SELECTORS if profile in profiles)
 
 
 def expand_program_inputs(
@@ -1645,7 +1647,7 @@ def program_extra_flags(program: Program, extra_flags: Iterable[str]) -> list[st
     flags = list(extra_flags)
     if not program.input_profile:
         return flags
-    flags.extend(f"-U{profile}" for profile in POLYBENCH_DATASET_PROFILES)
+    flags.extend(f"-U{profile}" for profile in POLYBENCH_PROFILE_SELECTORS)
     flags.append(f"-D{program.input_profile}")
     return flags
 
@@ -1704,7 +1706,7 @@ def resolve_polybench_input_size(
     flag_defines = compiler_defines(extra_flags)
     active_profiles = [
         profile
-        for profile in POLYBENCH_DATASET_PROFILES
+        for profile in POLYBENCH_PROFILE_SELECTORS
         if profile in source_defines or profile in flag_defines
     ]
     if active_profiles:
@@ -2687,7 +2689,11 @@ def environment_manifest(
         "min_measured_runs": args.min_measured_runs,
         "fixed_measured_runs": args.runs,
         "timeout_sec": args.timeout,
-        "polybench_profiles": args.polybench_profile or list(POLYBENCH_DATASET_PROFILES),
+        "polybench_profiles": (
+            args.polybench_size
+            or args.polybench_profile
+            or list(POLYBENCH_DATASET_PROFILES)
+        ),
         "prometheus_url": args.prometheus_url,
         "prometheus_exporter": args.prometheus_exporter,
         "prometheus_job": args.prometheus_job,
@@ -2888,6 +2894,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "When omitted, all five profiles are collected."
         ),
     )
+    parser.add_argument(
+        "--polybench-size",
+        action="append",
+        choices=POLYBENCH_SIZE_PROFILES,
+        help=(
+            "Expanded PolyBench input size (SIZE_01 through SIZE_20). Can be repeated. "
+            "Cannot be combined with --polybench-profile."
+        ),
+    )
     parser.add_argument("--exclude", action="append", default=[], help="Glob pattern for source files to skip, relative to --source-dir. Can be repeated.")
     parser.add_argument("--no-run", action="store_true", help="Only generate representations and static features.")
     parser.add_argument("--prometheus-address", default="127.0.0.1", help="Address used by the Prometheus metrics HTTP server.")
@@ -2978,10 +2993,13 @@ def main(argv: list[str] | None = None) -> int:
     if not source_programs:
         print(f"No source files found in {source_dir}")
         return 1
+    if args.polybench_profile and args.polybench_size:
+        print("Invalid PolyBench input configuration: choose legacy profiles or SIZE_XX, not both")
+        return 1
     try:
         programs, skipped_programs = expand_program_inputs(
             source_programs,
-            args.polybench_profile or POLYBENCH_DATASET_PROFILES,
+            args.polybench_size or args.polybench_profile or POLYBENCH_DATASET_PROFILES,
         )
     except ValueError as exc:
         print(f"Invalid PolyBench input configuration: {exc}")

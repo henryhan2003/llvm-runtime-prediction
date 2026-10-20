@@ -1225,7 +1225,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--benchmark", action="append", default=[])
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--list", action="store_true")
-    parser.add_argument("--input-profile", choices=("smoke", "official", "all"), default="smoke")
+    parser.add_argument(
+        "--input-profile",
+        default="smoke",
+        help="Input profile id (for example smoke, official, SIZE_01..SIZE_20) or all.",
+    )
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--measurement-seconds", type=float, default=10.0)
