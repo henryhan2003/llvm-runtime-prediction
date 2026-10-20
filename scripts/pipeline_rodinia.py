@@ -320,8 +320,9 @@ def _commands(value: Any, label: str) -> tuple[tuple[str, ...], ...]:
 
 def load_manifest(path: Path) -> tuple[BenchmarkSpec, ...]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    if data.get("schema_version") != 1:
-        raise ValueError("manifest schema_version must be 1")
+    schema_version = data.get("schema_version")
+    if schema_version not in {1, 2}:
+        raise ValueError("manifest schema_version must be 1 or 2")
     raw_benchmarks = data.get("benchmarks")
     if not isinstance(raw_benchmarks, list):
         raise ValueError("manifest benchmarks must be a JSON array")
@@ -346,7 +347,10 @@ def load_manifest(path: Path) -> tuple[BenchmarkSpec, ...]:
                 raise ValueError(f"{benchmark_id}.inputs entries must be objects")
             input_id = str(item.get("id", "")).strip()
             profile = str(item.get("profile", "")).strip()
-            if not input_id or input_id in input_ids or profile not in {"smoke", "official"}:
+            valid_profile = profile in {"smoke", "official"} or bool(
+                re.fullmatch(r"SIZE_(?:0[1-9]|1[0-9]|20)", profile)
+            )
+            if not input_id or input_id in input_ids or not valid_profile:
                 raise ValueError(f"invalid input entry in {benchmark_id}: {input_id!r}")
             input_ids.add(input_id)
             parameters = item.get("parameters", {})

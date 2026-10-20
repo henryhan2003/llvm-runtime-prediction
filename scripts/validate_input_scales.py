@@ -217,9 +217,18 @@ def validate_rodinia_configs() -> list[str]:
     errors: list[str] = []
     for path, expected_enabled in ((OPENMP_CONFIG, 19), (CUDA_CONFIG, 22)):
         data = load_json(path)
+        try:
+            from pipeline_rodinia import load_manifest
+
+            parsed_benchmarks = load_manifest(path)
+        except Exception as exc:
+            errors.append(f"{path.name}: pipeline loader rejected manifest: {exc}")
+            parsed_benchmarks = ()
         enabled = [item for item in data.get("benchmarks", []) if item.get("enabled", True)]
         if len(enabled) != expected_enabled:
             errors.append(f"{path.name}: expected {expected_enabled} enabled benchmarks, found {len(enabled)}")
+        if parsed_benchmarks and len([item for item in parsed_benchmarks if item.enabled]) != expected_enabled:
+            errors.append(f"{path.name}: pipeline loader enabled-benchmark count mismatch")
         for benchmark in enabled:
             inputs = benchmark.get("inputs", [])
             if len(inputs) != 20:
