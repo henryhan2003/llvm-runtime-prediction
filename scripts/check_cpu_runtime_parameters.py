@@ -7,6 +7,8 @@ import argparse
 import json
 import os
 import platform
+import shutil
+import subprocess
 import sys
 import tempfile
 from datetime import datetime
@@ -32,8 +34,30 @@ with open(path, 'rb', buffering=0) as stream:
     assert stream.read() == data
 """
 
+NATIVE_IO_TASK = r"""#define _POSIX_C_SOURCE 200809L
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+    if (argc != 2) return 2;
+    unsigned char input[65536], output[65536];
+    memset(input, 42, sizeof(input));
+    FILE *stream = fopen(argv[1], "wb");
+    if (!stream) return 3;
+    if (fwrite(input, 1, sizeof(input), stream) != sizeof(input)) return 4;
+    if (fflush(stream) || fsync(fileno(stream)) || fclose(stream)) return 5;
+    stream = fopen(argv[1], "rb");
+    if (!stream) return 6;
+    if (fread(output, 1, sizeof(output), stream) != sizeof(output)) return 7;
+    if (fclose(stream)) return 8;
+    return memcmp(input, output, sizeof(input)) != 0;
+}
+"""
+
 
 def check_metrics(metrics):
+    if metrics.get("process_metrics_backend") != "linux-process-probe-v3":
+        raise AssertionError("Expected rebuilt v3 probe; an older executable is still in use")
     for field in ["process_cpu_user_sec", "process_cpu_system_sec", "process_max_rss_bytes",
                   "process_fs_inputs", "process_fs_outputs"]:
         if not isinstance(metrics.get(field), (int, float)) or metrics[field] < 0:
@@ -58,18 +82,32 @@ def run_checks():
     result = {}
     with tempfile.TemporaryDirectory(prefix="cpu-runtime-check-") as directory:
         root = Path(directory)
-        for name in ["polybench", "openmp"]:
-            command = [sys.executable, "-c", IO_TASK, str(root / (name + ".bin"))]
-            if name == "polybench":
+        compiler = next((path for c in ["cc", "gcc", "clang"] if (path := shutil.which(c))), None)
+        if compiler is None:
+            raise RuntimeError("A C compiler is required for the native program self-check")
+        source = root / "native_io.c"
+        binary = root / "native_io"
+        source.write_text(NATIVE_IO_TASK, encoding="utf-8")
+        built = subprocess.run([compiler, "-O2", "-std=c11", "-Wall", "-Wextra", str(source), "-o", str(binary)],
+                               capture_output=True, text=True, timeout=30)
+        if built.returncode:
+            raise RuntimeError(f"Cannot build native I/O self-check: {built.stderr}")
+        for name in ["polybench", "openmp", "polybench_native", "openmp_native"]:
+            command = ([str(binary), str(root / (name + ".bin"))] if name.endswith("_native") else
+                       [sys.executable, "-c", IO_TASK, str(root / (name + ".bin"))])
+            if name.startswith("polybench"):
                 completed, elapsed, timed_out, metrics = polybench.run_monitored_command(command, root, 15)
                 if completed.returncode != 0 or timed_out:
-                    raise AssertionError(f"PolyBench execution failed: {completed.stderr}")
+                    raise AssertionError(f"{name}: execution failed, code={completed.returncode}: {completed.stderr}")
             else:
                 measured = openmp.run_process(command, root, os.environ.copy(), 15, True, True)
                 if not measured.success:
                     raise AssertionError(f"OpenMP execution failed: {measured.error_message}")
                 elapsed, metrics = measured.elapsed_sec, measured.metrics
-            check_metrics(metrics)
+            try:
+                check_metrics(metrics)
+            except AssertionError as exc:
+                raise AssertionError(f"{name}: {exc}") from exc
             if elapsed <= 0:
                 raise AssertionError("Runtime must be positive")
             result[name] = {"elapsed_sec": elapsed, "metrics": metrics}

@@ -14,6 +14,7 @@ $Files = @(
     'scripts/pipeline_new.py'
     'scripts/pipeline_rodinia.py'
     'scripts/rodinia_process_probe.c'
+    'scripts/cpu_runtime_io_collector.c'
     'scripts/cpu_runtime_parameters.py'
     'scripts/check_cpu_runtime_parameters.py'
     'tests/test_cpu_runtime_parameters.py'
@@ -43,10 +44,10 @@ ssh hanli@211.87.232.179
 cd /data_disk/hanli/llvm-runtime-prediction
 git status --short
 git pull --ff-only origin main
-tmux new -s cpu_runtime_v2
+tmux new -s cpu_runtime_v3
 ```
 
-如果 git pull 提示本地修改冲突，先停止并保留修改，不要使用 reset --hard、强制 checkout 或删除配置。若 tmux 提示会话已存在，使用 `tmux attach -t cpu_runtime_v2`，不要另开一个重复实验。
+如果 git pull 提示本地修改冲突，先停止并保留修改，不要使用 reset --hard、强制 checkout 或删除配置。若 tmux 提示会话已存在，使用 `tmux attach -t cpu_runtime_v3`，不要另开一个重复实验。已在旧 cpu_runtime_v2 会话中的用户可以继续使用原会话，但修复后必须新建 pilot 结果子目录。
 
 进入 tmux 后，手动执行环境激活：
 
@@ -85,7 +86,7 @@ python scripts/check_cpu_runtime_parameters.py --output results/cpu_runtime_para
 ```bash
 set -o pipefail
 RUN_TAG="$(date +%Y%m%d_%H%M%S)_$$"
-RUN_ROOT="/data_disk/hanli/cpu_runtime_v2_${RUN_TAG}"
+RUN_ROOT="/data_disk/hanli/cpu_runtime_v3_${RUN_TAG}"
 mkdir -p "$RUN_ROOT"
 printf 'RUN_ROOT=%s\n' "$RUN_ROOT"
 COMMON=(--warmup 1 --measurement-seconds 3 --min-measured-runs 3 --timeout 1800 --opt-level O2 --c-compiler clang --cxx-compiler clang++ --prometheus-url http://127.0.0.1:9090 --prometheus-exporter node --prometheus-job node --prometheus-instance 127.0.0.1:9100 --prometheus-query-step 1 --prometheus-query-timeout 10 --prometheus-query-delay 2 --prometheus-context-seconds 5)
@@ -216,18 +217,18 @@ SSH 掉线后重新登录并恢复：
 
 ```bash
 ssh hanli@211.87.232.179
-tmux attach -t cpu_runtime_v2
+tmux attach -t cpu_runtime_v3
 ```
 
 tmux 能防 SSH 掉线，不能防服务器重启、磁盘满或进程被管理员终止。pipeline 仍在批次末尾写汇总，当前不提供断点续采。
 
 ## 八、结果位置
 
-运行根目录由第四步输出，如 `/data_disk/hanli/cpu_runtime_v2_时间_PID/`。其中：
+运行根目录由第四步输出，如 `/data_disk/hanli/cpu_runtime_v3_时间_PID/`。其中：
 
 - `openmp_pilot/`、`polybench_pilot/`：pilot 结果，不与正式结果混合。
 - `openmp_full/`：19×20=380 条，带时间戳的 summary、runs、environment。
 - `polybench_full/`：30×20=600 条，带时间戳 results 汇总和独立的 run_records/run_summary/static/environment 文件。
-- 每个目录都有 pipeline.log；全量记录应使用本轮 v2 backend，不混入旧批次。
+- 每个目录都有 pipeline.log；全量记录应使用本轮 v3 backend，不混入旧批次。v2 permission_denied 的失败 pilot 应保留用于追溯，不混进正式数据。
 
 文件传输量和网络带宽为空且带明确未采集状态是本轮预期，不是验收遗漏；它们没有任务级传输观测，不能强行变成零值。

@@ -18,7 +18,7 @@ def probe_values(version="2"):
     values = dict(probe_version=version, elapsed_ns="123456789", returncode="0",
                   user_us="12000", system_us="3000", max_rss_bytes="4194304",
                   major_faults="1", minor_faults="23", fs_inputs="0", fs_outputs="8")
-    if version == "2":
+    if version in {"2", "3"}:
         values.update(io_status="ok", io_error="", child_pid="456")
         values.update({source: str(i * 10) for i, source in enumerate(runtime.IO_PROBE_FIELDS)})
     return values
@@ -60,6 +60,23 @@ class ParserTests(unittest.TestCase):
             _, _, metrics = self.parse(module, probe_values("1"))
             self.assertEqual("linux-process-probe-v1", metrics["process_metrics_backend"])
             self.assertEqual("not_collected_probe_v1", metrics["process_io_collection_status"])
+            self.assertTrue(all(metrics[field] == "" for field in runtime.IO_NUMERIC_FIELDS))
+
+    def test_v3_self_snapshot_is_supported_and_has_a_distinct_backend(self):
+        for module in [polybench, openmp]:
+            _, code, metrics = self.parse(module, probe_values("3"))
+            self.assertEqual(0, code)
+            self.assertEqual("linux-process-probe-v3", metrics["process_metrics_backend"])
+            self.assertEqual("ok", metrics["process_io_collection_status"])
+            self.assertEqual(40, metrics["process_storage_read_bytes"])
+
+    def test_missing_normal_exit_snapshot_stays_missing(self):
+        values = probe_values("3")
+        values.update(io_status="missing_self_io_snapshot", io_error="no normal-exit callback")
+        for module in [polybench, openmp]:
+            _, code, metrics = self.parse(module, values)
+            self.assertEqual(0, code)
+            self.assertEqual("missing_self_io_snapshot", metrics["process_io_collection_status"])
             self.assertTrue(all(metrics[field] == "" for field in runtime.IO_NUMERIC_FIELDS))
 
     def test_permission_failure_preserves_cpu_and_leaves_io_blank(self):
@@ -141,6 +158,13 @@ class AggregationTests(unittest.TestCase):
 
 
 class OpenMPIntegrationTests(unittest.TestCase):
+    def test_linux_command_selects_self_collector_without_replacing_target(self):
+        with mock.patch.object(runtime.sys, "platform", "linux"):
+            cmd = runtime.probe_command(Path("/probe"), Path("/tmp/report"), ["/task", "arg"], Path("/repo"))
+        self.assertEqual([str(Path("/probe")), str(Path("/tmp/report")), "--io-collector",
+                          str(Path("/repo") / "build/cpu_runtime_io_collector.so"),
+                          "--", "/task", "arg"], cmd)
+
     def test_openmp_summary_serializes_new_io_fields(self):
         spec = openmp.load_manifest(ROOT / "configs/rodinia_openmp.json")[0]
         item = spec.inputs[0]
@@ -168,16 +192,24 @@ class LinuxProbeTests(unittest.TestCase):
     def test_both_pipeline_interfaces_capture_short_lived_child_io(self):
         import check_cpu_runtime_parameters as check
         report = check.run_checks()
-        self.assertEqual({"polybench", "openmp"}, set(report))
+        self.assertEqual({"polybench", "openmp", "polybench_native", "openmp_native"}, set(report))
         for item in report.values():
-            self.assertEqual("linux-process-probe-v2", item["metrics"]["process_metrics_backend"])
+            self.assertEqual("linux-process-probe-v3", item["metrics"]["process_metrics_backend"])
 
     def test_child_failure_keeps_metrics_and_exit_status(self):
         completed, elapsed, timed_out, metrics = polybench.run_monitored_command(["/bin/sh", "-c", "exit 7"], timeout=5)
         self.assertEqual(7, completed.returncode)
         self.assertFalse(timed_out)
         self.assertGreater(elapsed, 0)
-        self.assertEqual("linux-process-probe-v2", metrics["process_metrics_backend"])
+        self.assertEqual("linux-process-probe-v3", metrics["process_metrics_backend"])
+
+    def test_direct_exit_does_not_fabricate_normal_exit_snapshot(self):
+        completed, _, timed_out, metrics = polybench.run_monitored_command(
+            [sys.executable, "-c", "import os; os._exit(0)"], timeout=5)
+        self.assertEqual(0, completed.returncode)
+        self.assertFalse(timed_out)
+        self.assertEqual("missing_self_io_snapshot", metrics["process_io_collection_status"])
+        self.assertTrue(all(metrics[field] == "" for field in runtime.IO_NUMERIC_FIELDS))
 
     def test_timeout_does_not_fabricate_io_values(self):
         completed, _, timed_out, metrics = polybench.run_monitored_command(["/bin/sleep", "5"], timeout=.05)

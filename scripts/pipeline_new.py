@@ -2254,6 +2254,7 @@ def windows_process_metrics(process: subprocess.Popen[str]) -> dict[str, object]
 
 def ensure_process_probe() -> Path:
     global _PROCESS_PROBE_PATH
+    cpu_runtime.ensure_io_collector(PROJECT_ROOT)
     if not PROCESS_PROBE_SOURCE.is_file():
         raise RuntimeError(f"process probe source not found: {PROCESS_PROBE_SOURCE}")
     if _PROCESS_PROBE_PATH and _PROCESS_PROBE_PATH.is_file():
@@ -2335,7 +2336,7 @@ def parse_process_probe_metrics(
         "fs_inputs",
         "fs_outputs",
     }
-    if not required.issubset(values) or values["probe_version"] not in {"1", "2"}:
+    if not required.issubset(values) or values["probe_version"] not in {"1", "2", "3"}:
         return None, None, {}
     try:
         elapsed_ns = int(values["elapsed_ns"])
@@ -2416,7 +2417,7 @@ def run_monitored_command(
             return result, 0.0, False, metrics
         metrics_directory = tempfile.TemporaryDirectory(prefix="polybench-process-")
         metrics_path = Path(metrics_directory.name) / "metrics.txt"
-        actual_command = [str(process_probe), str(metrics_path), "--", *cmd]
+        actual_command = cpu_runtime.probe_command(process_probe, metrics_path, cmd, PROJECT_ROOT)
 
     start = time.perf_counter()
     process = subprocess.Popen(

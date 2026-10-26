@@ -206,7 +206,7 @@ class ProcessProbeTests(unittest.TestCase):
         )
         self.assertTrue(result.success, result.error_message)
         self.assertEqual(
-            "linux-process-probe-v2",
+            "linux-process-probe-v3",
             result.metrics["process_metrics_backend"],
         )
         self.assertGreater(result.metrics["process_max_rss_bytes"], 0)

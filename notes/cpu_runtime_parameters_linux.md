@@ -51,9 +51,13 @@ task_transfer_metrics_status=not_collected_no_workflow_transfer_instrumentation
 
 ## 短进程与计时边界
 
-共享 C 探针升级为 `linux-process-probe-v2`。Linux 下先通过 `waitid(..., WEXITED | WNOWAIT)` 等待目标命令退出但暂不回收，读取其最终 `/proc/PID/io`，再通过 `wait4` 获得 CPU/RSS 等并回收进程。
+共享 C 探针升级为 `linux-process-probe-v3`。v2 曾在 `waitid(WNOWAIT)` 得到退出通知后从父进程读取 `/proc/PID/io`，但本次服务器 BFS pilot 的 300 次正式运行全部被权限检查拒绝。不能把“进程尚未回收”等同于“仍可读取其 I/O”，这属于原采集实现的兼容性问题，不能靠填零或关闭系统安全策略解决。
 
-这不依赖 1 秒或几十毫秒的轮询，短程序也有机会取得最终计数；不人为延长任务、不增加停顿。进程退出后的 procfs 读取和结果文件写入不计入 `runtime_sec`。v1 的计时终点在 `wait4` 返回之后，v2 在退出通知之后，因此必须保留 backend 版本，不应静默混合新旧采集批次。
+v3 自动构建轻量动态库 `cpu_runtime_io_collector.so`，仅对子进程设置 LD_PRELOAD，保留已有 LD_PRELOAD 配置。程序在正常退出回调中读取自身 `/proc/self/io`，在写采集报告之前完成计数快照。报告带目标 PID，子孙进程不会覆盖主进程报告。父探针通过 wait4 获得 CPU、RSS、退出码，再读取这个本用户创建的报告，不再依赖访问已退出进程的 procfs 权限。
+
+这不依赖轮询，不增加 sleep，不要求 sudo 或 CAP_SYS_PTRACE。它适用于正常退出的动态链接程序；静态链接程序、`_exit`、致命信号、绕过动态加载器清理的退出路径，可能不执行回调，必须记为 `missing_self_io_snapshot`，不能假装已采集。回调之后的更晚清理活动不属于此 I/O 快照；它不是任意程序所有退出路径的完整追踪器。
+
+v3 的 runtime 从 fork/exec 到 wait4 返回，包含加载采集库、退出回调与写报告的开销；I/O 快照排除采集库自身写报告的字节，但可能包含额外加载器开销。对很短的任务这些开销不能忽略。必须保留 backend 版本，不把 v1/v2/v3 标签静默混合；新旧采集时间也不能解释成完全相同的测量条件。
 
 旧 v1 探针输出仍可解析，但新增 I/O 字段保持空，状态为 `not_collected_probe_v1`。探针会根据新源码重新编译；请不要只同步两个 Python 入口而漏掉共享 C 源码和新辅助模块。
 
@@ -63,6 +67,9 @@ task_transfer_metrics_status=not_collected_no_workflow_transfer_instrumentation
 - `permission_denied`：目标进程 procfs 读权限被系统策略限制。
 - `unavailable_proc_io` / `invalid_proc_io` / `invalid_probe_io`：procfs 不可用、格式不完整或解析失败。
 - `not_collected_probe_v1`：读到旧版探针，不能生成新增值。
+- `missing_self_io_snapshot`：v3 没有获得正常退出的自采集报告；检查动态链接、LD_PRELOAD 是否被忽略或程序是否异常/直接退出。
+- `invalid_self_io_snapshot`：自采集报告不完整或 PID 不匹配，不能作为有效目标。
+- `self_io_collection_failed`：程序自身读取失败，详情在错误字段。
 - `not_collected_platform_or_probe_failure` 等：不支持的平台或探针失败，数值留空。
 - 汇总 `partial`：成功正式运行中只有一部分 I/O 完整。为了不静默平均偏差子集，七项汇总均值全部留空，但逐次运行表中的有效计数仍保留。
 - 汇总 `unavailable`：存在成功正式运行，但新增 I/O 没有完整样本。
@@ -105,6 +112,7 @@ python -m pip install -r requirements.txt
 scripts/pipeline_new.py
 scripts/pipeline_rodinia.py
 scripts/rodinia_process_probe.c
+scripts/cpu_runtime_io_collector.c
 scripts/cpu_runtime_parameters.py
 scripts/check_cpu_runtime_parameters.py
 ```
@@ -116,7 +124,7 @@ python scripts/check_cpu_runtime_parameters.py \
   --output results/cpu_runtime_parameters_check.json
 ```
 
-脚本分别经过 PolyBench 和 OpenMP 的真实运行接口启动一个短命子进程，写入并读回已知的 64 KiB 数据；检查 CPU、RSS、逻辑 I/O、存储 I/O 字段、空的传输字段和退出状态。测试文件放在临时目录，自动清理，不会运行 20 档 benchmark 或修改旧 CSV。
+脚本先编译一个原生 C 读写小程序，再分别经过 PolyBench 和 OpenMP 的真实运行接口测试 Python 子进程与原生 C 子进程，共四条路径。每条均写入并读回已知的 64 KiB 数据，检查 CPU、RSS、逻辑 I/O、存储 I/O 字段、空的传输字段和退出状态。后端必须为 v3。测试文件放在临时目录，自动清理，不会运行 20 档 benchmark 或修改旧 CSV。
 
 预期退出码为 0，报告 `status=PASS`，两条路径的 `process_io_collection_status=ok`。存储读字节为 0 可以是正常缓存命中，脚本不会强制清缓存来制造非零值。
 
@@ -132,12 +140,13 @@ python -m unittest discover -s tests -p 'test_cpu_runtime_parameters.py' -v
 
 ## 验证边界
 
-当前 Windows 工作区已验证 v1/v2 解析、两入口字段一致、真实零/缺失区分、按正式运行汇总以及 CSV 字段输出。真实 Linux `/proc`/waitid 编译与执行测试在 Windows 上跳过；上述服务器自检通过之前，不宣称 Linux 实机验收完成。
+当前 Windows 工作区验证 v1/v2/v3 解析、两入口字段一致、真实零/缺失区分、按正式运行汇总以及 CSV 字段输出。真实 Linux 动态库编译、自身 procfs 采集与正常/异常退出测试在 Windows 上跳过；上述服务器自检通过之前，不宣称 Linux 实机验收完成。自检通过后还要执行真实 BFS/GEMM pilot，不能仅凭 Python 自检就启动全量。
 
-共享探针和 Rodinia 运行工具原来也被 CUDA 的 host 侧复用，因此共享工具兼容 v2；没有修改 CUDA kernel、GPU 采样、输入配置或运行入口。无论哪条路径使用这些字段，都只能按 host/process 范围解释，不能视为 GPU device 指标。
+共享探针和 Rodinia 运行工具原来也被 CUDA 的 host 侧复用，因此共享工具兼容 v3；没有修改 CUDA kernel、GPU 采样、输入配置或运行入口。无论哪条路径使用这些字段，都只能按 host/process 范围解释，不能视为 GPU device 指标。
 
 ## 定义来源
 
 - Linux rusage：https://man7.org/linux/man-pages/man2/getrusage.2.html
 - Linux 进程 I/O：https://man7.org/linux/man-pages/man5/proc_pid_io.5.html
-- waitid/WNOWAIT：https://man7.org/linux/man-pages/man2/waitpid.2.html
+- 动态加载器 LD_PRELOAD：https://man7.org/linux/man-pages/man8/ld.so.8.html
+- Linux 对退出任务 dumpability 检查的兼容问题：https://lists.ubuntu.com/archives/kernel-team/2026-May/167943.html

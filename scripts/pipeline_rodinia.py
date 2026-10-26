@@ -454,6 +454,7 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
 
 def ensure_process_probe() -> Path:
     global _PROCESS_PROBE_PATH
+    cpu_runtime.ensure_io_collector(PROJECT_ROOT)
     if _PROCESS_PROBE_PATH and _PROCESS_PROBE_PATH.is_file() and PROCESS_PROBE_SOURCE.is_file():
         if _PROCESS_PROBE_PATH.stat().st_mtime >= PROCESS_PROBE_SOURCE.stat().st_mtime:
             return _PROCESS_PROBE_PATH
@@ -538,7 +539,7 @@ def parse_process_probe_metrics(
         "fs_inputs",
         "fs_outputs",
     }
-    if not required.issubset(values) or values["probe_version"] not in {"1", "2"}:
+    if not required.issubset(values) or values["probe_version"] not in {"1", "2", "3"}:
         return None, None, {}
     try:
         elapsed_ns = int(values["elapsed_ns"])
@@ -596,7 +597,7 @@ def _run_measured_posix(
     error_message = ""
     started_ns = time.perf_counter_ns()
     metrics_path = log_path.parent / "process.metrics"
-    actual_command = [str(process_probe), str(metrics_path), "--", *command]
+    actual_command = cpu_runtime.probe_command(process_probe, metrics_path, command, PROJECT_ROOT)
     try:
         with log_path.open("wb") as log_file:
             stdout_target: Any = subprocess.DEVNULL if discard_stdout else log_file
