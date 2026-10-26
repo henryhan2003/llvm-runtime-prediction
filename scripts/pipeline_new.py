@@ -29,6 +29,11 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 try:
+    import cpu_runtime_parameters as cpu_runtime
+except ImportError:
+    from scripts import cpu_runtime_parameters as cpu_runtime
+
+try:
     from prometheus_client import Counter, Gauge, Histogram, start_http_server
 except ImportError as exc:
     raise SystemExit(
@@ -228,6 +233,7 @@ PROCESS_RUN_FIELDS = [
     "process_other_bytes",
     "process_metrics_success",
     "process_metrics_error",
+    *cpu_runtime.RUN_FIELDS,
 ]
 
 MEASUREMENT_SUMMARY_FIELDS = [
@@ -257,6 +263,7 @@ MEASUREMENT_SUMMARY_FIELDS = [
     "process_read_bytes_total",
     "process_write_bytes_total",
     "process_other_bytes_total",
+    *cpu_runtime.SUMMARY_FIELDS,
 ]
 
 STATIC_ENVIRONMENT_FIELDS = [
@@ -2141,6 +2148,7 @@ def empty_process_metrics(error: str = "") -> dict[str, object]:
     metrics = {field: "" for field in PROCESS_RUN_FIELDS}
     metrics["process_metrics_success"] = False
     metrics["process_metrics_error"] = error
+    metrics.update(cpu_runtime.empty_metrics("not_collected_platform_or_probe_failure"))
     return metrics
 
 
@@ -2327,7 +2335,7 @@ def parse_process_probe_metrics(
         "fs_inputs",
         "fs_outputs",
     }
-    if not required.issubset(values) or values["probe_version"] != "1":
+    if not required.issubset(values) or values["probe_version"] not in {"1", "2"}:
         return None, None, {}
     try:
         elapsed_ns = int(values["elapsed_ns"])
@@ -2367,11 +2375,14 @@ def parse_process_probe_metrics(
             "process_page_faults": major_faults + minor_faults,
             "process_fs_inputs": fs_inputs,
             "process_fs_outputs": fs_outputs,
-            "process_metrics_backend": "linux-process-probe-v1",
+            "process_metrics_backend": f"linux-process-probe-v{values['probe_version']}",
             "process_metrics_success": True,
             "process_metrics_error": "",
         }
     )
+    metrics.update(cpu_runtime.parse_probe_extensions(values))
+    if values.get("child_pid", "").isdigit():
+        metrics["process_id"] = int(values["child_pid"])
     return elapsed_ns / 1_000_000_000, returncode, metrics
 
 
@@ -2465,7 +2476,7 @@ def summarize_process_records(
     min_measured_runs: int,
 ) -> dict[str, object]:
     successful = [record for record in records if record.get("success") is True]
-    sampled = [record for record in records if record.get("process_metrics_success") is True]
+    sampled = [record for record in successful if record.get("process_metrics_success") is True]
 
     def total(field: str) -> float | str:
         values = numeric_record_values(sampled, field)
@@ -2513,6 +2524,7 @@ def summarize_process_records(
         "process_read_bytes_total": total("process_read_bytes"),
         "process_write_bytes_total": total("process_write_bytes"),
         "process_other_bytes_total": total("process_other_bytes"),
+        **cpu_runtime.summarize(records),
     }
 
 
@@ -2673,6 +2685,7 @@ def environment_manifest(
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "platform": platform.platform(),
         "python_version": sys.version.split()[0],
+        "cpu_runtime_parameter_schema": cpu_runtime.schema_description(),
         **static_environment,
         "c_compiler": args.c_compiler,
         "cxx_compiler": args.cxx_compiler,

@@ -29,6 +29,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+try:
+    import cpu_runtime_parameters as cpu_runtime
+except ImportError:
+    from scripts import cpu_runtime_parameters as cpu_runtime
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -225,6 +230,7 @@ SUMMARY_FIELDS = [
     *PROCESS_FIELDS,
     "process_max_rss_bytes_peak",
     "process_metrics_backend",
+    *cpu_runtime.SUMMARY_FIELDS,
     *pipeline_core().PROMETHEUS_RESULT_FIELDS,
     *ENVIRONMENT_FIELDS,
     "static_status",
@@ -253,6 +259,7 @@ RUN_FIELDS = [
     "timed_out",
     *PROCESS_FIELDS,
     "process_metrics_backend",
+    *cpu_runtime.RUN_FIELDS,
     "error_message",
 ]
 
@@ -447,8 +454,9 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
 
 def ensure_process_probe() -> Path:
     global _PROCESS_PROBE_PATH
-    if _PROCESS_PROBE_PATH and _PROCESS_PROBE_PATH.is_file():
-        return _PROCESS_PROBE_PATH
+    if _PROCESS_PROBE_PATH and _PROCESS_PROBE_PATH.is_file() and PROCESS_PROBE_SOURCE.is_file():
+        if _PROCESS_PROBE_PATH.stat().st_mtime >= PROCESS_PROBE_SOURCE.stat().st_mtime:
+            return _PROCESS_PROBE_PATH
     if os.name != "posix":
         raise RuntimeError("the Rodinia process probe can only be built on POSIX systems")
     if not PROCESS_PROBE_SOURCE.is_file():
@@ -530,7 +538,7 @@ def parse_process_probe_metrics(
         "fs_inputs",
         "fs_outputs",
     }
-    if not required.issubset(values) or values["probe_version"] != "1":
+    if not required.issubset(values) or values["probe_version"] not in {"1", "2"}:
         return None, None, {}
     try:
         elapsed_ns = int(values["elapsed_ns"])
@@ -563,8 +571,9 @@ def parse_process_probe_metrics(
         "process_minor_page_faults": minor_faults,
         "process_fs_inputs": fs_inputs,
         "process_fs_outputs": fs_outputs,
-        "process_metrics_backend": "linux-process-probe-v1",
+        "process_metrics_backend": f"linux-process-probe-v{values['probe_version']}",
     }
+    metrics.update(cpu_runtime.parse_probe_extensions(values))
     return elapsed_ns / 1_000_000_000, returncode, metrics
 
 
@@ -1163,6 +1172,8 @@ def _run_row(
     }
     row.update({field: result.metrics.get(field, "") for field in PROCESS_FIELDS})
     row["process_metrics_backend"] = result.metrics.get("process_metrics_backend", "unavailable")
+    row.update(cpu_runtime.empty_metrics("not_collected_probe_or_platform_failure"))
+    row.update({field: result.metrics[field] for field in cpu_runtime.RUN_FIELDS if field in result.metrics})
     return row
 
 
@@ -1291,6 +1302,7 @@ def measure_input(
         }
     )
     summary["process_metrics_backend"] = ",".join(backends) if backends else "unavailable"
+    summary.update(cpu_runtime.summarize(all_rows))
     summary["run_success"] = bool(measured_results) and not errors
     return summary, all_rows, errors
 
@@ -1641,6 +1653,7 @@ def main(argv: list[str] | None = None) -> int:
                         **{field: "" for field in PROCESS_FIELDS},
                         "process_max_rss_bytes_peak": "",
                         "process_metrics_backend": "not_run",
+                        **cpu_runtime.summarize([]),
                         "run_success": "not_run" if args.build_only and build_success else False,
                     }
                 )
@@ -1676,6 +1689,7 @@ def main(argv: list[str] | None = None) -> int:
                 "rodinia_root": str(rodinia_root),
                 "arguments": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
                 "environment": environment_features,
+                "cpu_runtime_parameter_schema": cpu_runtime.schema_description(),
                 "benchmarks": [spec.benchmark_id for spec in selected],
             },
             ensure_ascii=False,
