@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 import sys
 import tempfile
@@ -18,7 +20,7 @@ def probe_values(version="2"):
     values = dict(probe_version=version, elapsed_ns="123456789", returncode="0",
                   user_us="12000", system_us="3000", max_rss_bytes="4194304",
                   major_faults="1", minor_faults="23", fs_inputs="0", fs_outputs="8")
-    if version in {"2", "3"}:
+    if version in {"2", "3", "4"}:
         values.update(io_status="ok", io_error="", child_pid="456")
         values.update({source: str(i * 10) for i, source in enumerate(runtime.IO_PROBE_FIELDS)})
     return values
@@ -69,6 +71,22 @@ class ParserTests(unittest.TestCase):
             self.assertEqual("linux-process-probe-v3", metrics["process_metrics_backend"])
             self.assertEqual("ok", metrics["process_io_collection_status"])
             self.assertEqual(40, metrics["process_storage_read_bytes"])
+
+    def test_v4_is_supported_without_changing_legacy_parser_results(self):
+        for module in [polybench, openmp]:
+            _, code, metrics = self.parse(module, probe_values("4"))
+            self.assertEqual(0, code)
+            self.assertEqual("linux-process-probe-v4", metrics["process_metrics_backend"])
+            self.assertEqual("ok", metrics["process_io_collection_status"])
+            self.assertEqual(40, metrics["process_storage_read_bytes"])
+
+    def test_obsolete_collector_is_missing_not_a_true_zero(self):
+        values = probe_values("4")
+        values.update(io_status="incompatible_self_io_collector", io_error="rebuild probe and library together")
+        for module in [polybench, openmp]:
+            _, _, metrics = self.parse(module, values)
+            self.assertEqual("incompatible_self_io_collector", metrics["process_io_collection_status"])
+            self.assertTrue(all(metrics[field] == "" for field in runtime.IO_NUMERIC_FIELDS))
 
     def test_missing_normal_exit_snapshot_stays_missing(self):
         values = probe_values("3")
@@ -153,6 +171,8 @@ class AggregationTests(unittest.TestCase):
 
     def test_schema_marks_dynamic_supervision_not_static_prediction_inputs(self):
         schema = runtime.schema_description()
+        self.assertEqual(4, schema["schema_version"])
+        self.assertIn("syscall", schema["io_collector_implementation"])
         self.assertIn("not_direct_static_inputs", schema["prediction_role"])
         self.assertIn("missing, not zero", schema["file_transfer_and_bandwidth"])
 
@@ -186,22 +206,146 @@ class OpenMPIntegrationTests(unittest.TestCase):
             self.assertIn("process_storage_read_bytes", path.read_text(encoding="utf-8-sig"))
 
 
+class OpenMPRepairValidationTests(unittest.TestCase):
+    def write_batch(self, root, mutate_summary=None, mutate_runs=None):
+        import check_cpu_runtime_parameters as checker
+        metrics = {**record(10), "process_cpu_user_sec": .1, "process_cpu_system_sec": .01,
+                   "process_max_rss_bytes": 4096, "process_major_page_faults": 0,
+                   "process_minor_page_faults": 10, "process_fs_inputs": 0, "process_fs_outputs": 8,
+                   "process_metrics_backend": "linux-process-probe-v4",
+                   **{field: "" for field in runtime.TRANSFER_FIELDS},
+                   "task_transfer_metrics_status": runtime.TRANSFER_STATUS}
+        rows = []
+        for phase, count in [("warmup", 1), ("measure", 3)]:
+            for i in range(1, count + 1):
+                rows.append({**metrics, "session_id": "repair", "run_id": f"{phase}-{i}",
+                             "program_id": "myocyte", "input_id": "SIZE_01", "input_profile": "SIZE_01",
+                             "phase": phase, "run_index": i, "runtime_sec": 1.,
+                             "success": True, "timed_out": False, "returncode": 0, "error_message": ""})
+        summary = {**metrics, "session_id": "repair", "program_id": "myocyte", "input_id": "SIZE_01",
+                   "build_success": True, "run_success": True, "static_status": "success", "error_message": "",
+                   "warmup_runs_requested": 1, "warmup_runs_completed": 1,
+                   "measured_runs": 3, "runtime_sec_median": 1., "measurement_seconds_actual": 3.,
+                   "measurement_seconds_requested": 3., "process_io_sampled_runs": 3, "process_io_missing_runs": 0,
+                   "process_max_rss_bytes_peak": 4096, "prometheus_three_phase_collection_success": True,
+                   "prometheus_three_phase_collection_error": "",
+                   **{field: 0 for field in [*openmp.AST_FIELDS, *openmp.CFG_FIELDS, *openmp.IR_FIELDS]}}
+        for phase in ["before", "during", "after"]:
+            summary.update({**{field: 0 for field in openmp.SUMMARY_FIELDS
+                                if field.startswith("host_") and f"_{phase}_" in field},
+                            f"prometheus_{phase}_collection_success": True,
+                            f"prometheus_{phase}_collection_error": "", f"prometheus_{phase}_sample_count": 6,
+                            f"host_cpu_usage_pct_{phase}_mean": 2.})
+        if mutate_summary:
+            mutate_summary(summary)
+        if mutate_runs:
+            mutate_runs(rows)
+        openmp.write_csv(root / "rodinia_openmp_summary_repair.csv", [summary], openmp.SUMMARY_FIELDS)
+        openmp.write_csv(root / "rodinia_openmp_runs_repair.csv", rows, openmp.RUN_FIELDS)
+        (root / "rodinia_openmp_environment_repair.json").write_text(
+            json.dumps({"session_id": "repair", "cpu_runtime_parameter_schema": {"schema_version": 4}}), encoding="utf-8")
+        return checker
+
+    def test_valid_repair_reconciles_and_preserves_original_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checker = self.write_batch(root)
+            before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in root.iterdir()}
+            report = checker.check_openmp_results(root, 1, ["myocyte"])
+            self.assertEqual("PASS", report["status"], report)
+            self.assertEqual(4, report["run_records"])
+            self.assertEqual(before, {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in root.iterdir()})
+
+    def test_complete_twenty_size_repair_is_accepted(self):
+        import csv
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checker = self.write_batch(root)
+            with (root / "rodinia_openmp_summary_repair.csv").open(encoding="utf-8-sig", newline="") as stream:
+                template = next(csv.DictReader(stream))
+            with (root / "rodinia_openmp_runs_repair.csv").open(encoding="utf-8-sig", newline="") as stream:
+                invocations = list(csv.DictReader(stream))
+            summaries, runs = [], []
+            for i in range(1, 21):
+                size = f"SIZE_{i:02d}"
+                summaries.append({**template, "input_id": size, "input_profile": size})
+                runs.extend({**row, "input_id": size, "input_profile": size,
+                             "run_id": f"{size}-{row['run_id']}"} for row in invocations)
+            openmp.write_csv(root / "rodinia_openmp_summary_repair.csv", summaries, openmp.SUMMARY_FIELDS)
+            openmp.write_csv(root / "rodinia_openmp_runs_repair.csv", runs, openmp.RUN_FIELDS)
+            report = checker.check_openmp_results(root, 20, ["myocyte"])
+            self.assertEqual("PASS", report["status"], report)
+            self.assertEqual(80, report["run_records"])
+
+    def test_incomplete_io_is_rejected_even_if_program_succeeds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checker = self.write_batch(root, mutate_runs=lambda rows: rows[1].update(process_io_collection_status="invalid_self_io_snapshot"))
+            report = checker.check_openmp_results(root, 1, ["myocyte"])
+            self.assertEqual("FAIL", report["status"])
+            self.assertTrue(any("I/O incomplete" in error for error in report["errors"]))
+
+    def test_wrong_program_or_configuration_count_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checker = self.write_batch(root)
+            self.assertEqual("FAIL", checker.check_openmp_results(root, 20, ["myocyte"])["status"])
+            self.assertEqual("FAIL", checker.check_openmp_results(root, 1, ["bfs"])["status"])
+
+    def test_summary_mean_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checker = self.write_batch(root, mutate_summary=lambda row: row.update(process_io_rchar_bytes=999))
+            report = checker.check_openmp_results(root, 1)
+            self.assertEqual("FAIL", report["status"])
+            self.assertTrue(any("aggregation mismatch" in error for error in report["errors"]))
+
+    def test_old_or_mixed_backend_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checker = self.write_batch(root, mutate_runs=lambda rows: rows[0].update(process_metrics_backend="linux-process-probe-v3"))
+            report = checker.check_openmp_results(root, 1)
+            self.assertEqual("FAIL", report["status"])
+            self.assertTrue(any("old or mixed" in error for error in report["errors"]))
+
+    def test_duplicate_run_and_monitoring_failure_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checker = self.write_batch(root, mutate_summary=lambda row: row.update(prometheus_before_collection_success=False),
+                                       mutate_runs=lambda rows: rows[1].update(run_id=rows[0]["run_id"]))
+            report = checker.check_openmp_results(root, 1)
+            self.assertEqual("FAIL", report["status"])
+            self.assertTrue(any("duplicate run_id" in error for error in report["errors"]))
+            self.assertTrue(any("before monitoring failure" in error for error in report["errors"]))
+
+    def test_nonfinite_warmup_and_missing_transfer_status_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checker = self.write_batch(root, mutate_runs=lambda rows: rows[0].update(runtime_sec="NaN"))
+            self.assertEqual("FAIL", checker.check_openmp_results(root, 1)["status"])
+            checker = self.write_batch(root, mutate_summary=lambda row: row.update(task_transfer_metrics_status=""))
+            self.assertEqual("FAIL", checker.check_openmp_results(root, 1)["status"])
+
+
 @unittest.skipUnless(sys.platform.startswith("linux") and any(shutil.which(c) for c in ["cc", "gcc", "clang"]),
                      "Linux with a C compiler is required for the real /proc exit snapshot")
 class LinuxProbeTests(unittest.TestCase):
     def test_both_pipeline_interfaces_capture_short_lived_child_io(self):
         import check_cpu_runtime_parameters as check
         report = check.run_checks()
-        self.assertEqual({"polybench", "openmp", "polybench_native", "openmp_native"}, set(report))
-        for item in report.values():
-            self.assertEqual("linux-process-probe-v3", item["metrics"]["process_metrics_backend"])
+        self.assertEqual({"polybench", "openmp", "polybench_native", "openmp_native",
+                          "polybench_symbol_collision", "openmp_symbol_collision"}, set(report))
+        for name, item in report.items():
+            self.assertEqual("linux-process-probe-v4", item["metrics"]["process_metrics_backend"])
+            if name.endswith("_symbol_collision"):
+                self.assertEqual({"read": 91, "write": 92}, item["legacy_negative_control_exit_codes"])
 
     def test_child_failure_keeps_metrics_and_exit_status(self):
         completed, elapsed, timed_out, metrics = polybench.run_monitored_command(["/bin/sh", "-c", "exit 7"], timeout=5)
         self.assertEqual(7, completed.returncode)
         self.assertFalse(timed_out)
         self.assertGreater(elapsed, 0)
-        self.assertEqual("linux-process-probe-v3", metrics["process_metrics_backend"])
+        self.assertEqual("linux-process-probe-v4", metrics["process_metrics_backend"])
 
     def test_direct_exit_does_not_fabricate_normal_exit_snapshot(self):
         completed, _, timed_out, metrics = polybench.run_monitored_command(

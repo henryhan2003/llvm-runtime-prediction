@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -36,14 +37,15 @@ static void collect_self_io(void) {
     unsigned long long values[7] = {0};
     unsigned int found = 0;
     char buffer[2048];
-    int input = open("/proc/self/io", O_RDONLY | O_CLOEXEC);
+    /* Benchmarks can export non-POSIX read/write; bypass their ELF symbols. */
+    int input = (int)syscall(SYS_openat, AT_FDCWD, "/proc/self/io", O_RDONLY | O_CLOEXEC, 0);
     if (input < 0) {
         status = (errno == EACCES || errno == EPERM) ? "permission_denied" : "unavailable_proc_io";
         snprintf(error, sizeof(error), "%s", strerror(errno));
     } else {
         ssize_t count;
         do {
-            count = read(input, buffer, sizeof(buffer) - 1);
+            count = (ssize_t)syscall(SYS_read, input, buffer, sizeof(buffer) - 1);
         } while (count < 0 && errno == EINTR);
         if (count <= 0) {
             status = "invalid_proc_io";
@@ -73,21 +75,23 @@ static void collect_self_io(void) {
                 snprintf(error, sizeof(error), "incomplete /proc/self/io");
             }
         }
-        close(input);
+        syscall(SYS_close, input);
     }
     char report[1024];
     int length = snprintf(report, sizeof(report),
-        "io_child_pid=%ld\nio_status=%s\nio_error=%s\n"
+        "io_collector_version=4\nio_child_pid=%ld\nio_status=%s\nio_error=%s\n"
         "io_rchar=%llu\nio_wchar=%llu\nio_syscr=%llu\nio_syscw=%llu\n"
         "io_read_bytes=%llu\nio_write_bytes=%llu\nio_cancelled_write_bytes=%llu\n",
         (long)target_pid, status, error, values[0], values[1], values[2], values[3],
         values[4], values[5], values[6]);
     if (length > 0 && (size_t)length < sizeof(report)) {
-        int output = open(report_path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        int output = (int)syscall(SYS_openat, AT_FDCWD, report_path,
+                                  O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
         if (output >= 0) {
             size_t written = 0;
             while (written < (size_t)length) {
-                ssize_t count = write(output, report + written, (size_t)length - written);
+                ssize_t count = (ssize_t)syscall(SYS_write, output, report + written,
+                                               (size_t)length - written);
                 if (count < 0 && errno == EINTR) {
                     continue;
                 }
@@ -96,7 +100,7 @@ static void collect_self_io(void) {
                 }
                 written += (size_t)count;
             }
-            close(output);
+            syscall(SYS_close, output);
         }
     }
     free(report_path);

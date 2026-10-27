@@ -1,5 +1,45 @@
 # CPU runtime parameters：Git 同步与 Linux 20 档采集指令
 
+## 2026-10-27：myocyte 的 v4 局部修复
+
+当前已有 380 条 v3 结果，其中仅 myocyte 的 20 档新增 I/O 缺失。不要照后面的历史流程直接重跑整批。此次同步同一组十个文件，提交信息可使用 `Fix myocyte IO collector symbol collisions and add v4 checks`；没有修改 benchmark 源码、输入配置或既有 CSV，也不会自动合并新旧结果。
+
+在原 tmux 中手动确认 conda 已激活，再更新代码并执行新版自检：
+
+```bash
+cd /data_disk/hanli/llvm-runtime-prediction
+git pull --ff-only origin main
+python scripts/check_cpu_runtime_parameters.py --output results/cpu_runtime_parameters_check_v4.json
+```
+
+要求六条路径全部 PASS，包括 polybench_symbol_collision 和 openmp_symbol_collision。真实 Linux C 编译、动态符号负对照在 Windows 无法验证；本地测试通过不替代此服务器自检。
+
+自检通过、Prometheus ready/up=1、无其他采集任务且磁盘有余量后，在同一 tmux 中创建全新目录。以下参数与原 v3 批次保持相同，不依赖旧 shell 变量：
+
+```bash
+MYO_ROOT="/data_disk/hanli/myocyte_io_v4_$(date +%Y%m%d_%H%M%S)_$$"
+mkdir -p "$MYO_ROOT/pilot" "$MYO_ROOT/full"
+COMMON=(--warmup 1 --measurement-seconds 3 --min-measured-runs 3 --timeout 1800 --opt-level O2 --c-compiler clang --cxx-compiler clang++ --prometheus-url http://127.0.0.1:9090 --prometheus-exporter node --prometheus-job node --prometheus-instance 127.0.0.1:9100 --prometheus-query-step 1 --prometheus-query-timeout 10 --prometheus-query-delay 2 --prometheus-context-seconds 5)
+set -o pipefail
+python -u scripts/pipeline_rodinia.py --manifest configs/rodinia_openmp_20sizes.json --benchmark myocyte --input-profile SIZE_01 --results-dir "$MYO_ROOT/pilot" --build-timeout 1800 --collect-static "${COMMON[@]}" 2>&1 | tee "$MYO_ROOT/pilot/pipeline.log"
+PILOT_STATUS=("${PIPESTATUS[@]}")
+printf 'pipeline_exit=%s tee_exit=%s\n' "${PILOT_STATUS[0]}" "${PILOT_STATUS[1]}" | tee -a "$MYO_ROOT/pilot/pipeline.log"
+python scripts/check_cpu_runtime_parameters.py --openmp-results-dir "$MYO_ROOT/pilot" --expected-configurations 1 --expected-program myocyte --output "$MYO_ROOT/pilot/validation.json"
+```
+
+只有 pipeline_exit=0、tee_exit=0、单档验收 PASS 后再执行下面的 20 档补采。失败则停止，不把缺失 I/O 改成 0。
+
+```bash
+python -u scripts/pipeline_rodinia.py --manifest configs/rodinia_openmp_20sizes.json --benchmark myocyte --input-profile all --results-dir "$MYO_ROOT/full" --build-timeout 1800 --collect-static "${COMMON[@]}" 2>&1 | tee "$MYO_ROOT/full/pipeline.log"
+FULL_STATUS=("${PIPESTATUS[@]}")
+printf 'pipeline_exit=%s tee_exit=%s\n' "${FULL_STATUS[0]}" "${FULL_STATUS[1]}" | tee -a "$MYO_ROOT/full/pipeline.log"
+python scripts/check_cpu_runtime_parameters.py --openmp-results-dir "$MYO_ROOT/full" --expected-configurations 20 --expected-program myocyte --output "$MYO_ROOT/full/validation.json"
+```
+
+每个状态数组保存行必须紧接 pipeline 命令。传回 pilot/full 的 summary、runs、environment、pipeline.log 和 validation.json。不要直接覆盖原 380 行 CSV；后续若构建派生数据，myocyte 应使用同次 v4 补采的运行时间与资源标签，并保留新旧批次、backend 和来源；不能把旧运行时间与新资源标签无标记拼成一次观测。其余 360 行保留 v3 标记，因此混合版本的数据也不能宣称是同一仪器版本的严格对照。
+
+以下是通用全量流程。原会话名称中含 v3 只是名称，不影响其中运行 v4；当前先完成上面的局部修复，不自动启动两套全量实验。
+
 顺序为：Windows 提交推送，服务器更新，进入 tmux 手动激活 conda，自检与单配置 pilot，最后逐套全量采集。不要同时运行两套，避免资源竞争。以下指令不会替你执行 Git 提交或启动实验。
 
 本次参数沿用之前 OpenMP 快速采集：warmup=1、measurement-seconds=3、至少 3 次正式运行、O2，Prometheus 上下文各 5 秒、查询步长 1 秒。3 秒是预算，不是超时；慢程序至少运行 3 次后才结束，实际用时可能明显超过 3 秒。每次调用超时设置为 1800 秒，防止大档位因原来 30 秒限制失败；这不是要求每次都跑 1800 秒。
@@ -229,6 +269,6 @@ tmux 能防 SSH 掉线，不能防服务器重启、磁盘满或进程被管理�
 - `openmp_pilot/`、`polybench_pilot/`：pilot 结果，不与正式结果混合。
 - `openmp_full/`：19×20=380 条，带时间戳的 summary、runs、environment。
 - `polybench_full/`：30×20=600 条，带时间戳 results 汇总和独立的 run_records/run_summary/static/environment 文件。
-- 每个目录都有 pipeline.log；全量记录应使用本轮 v3 backend，不混入旧批次。v2 permission_denied 的失败 pilot 应保留用于追溯，不混进正式数据。
+- 每个目录都有 pipeline.log；新启动的批次应使用当前 v4 backend，不混入旧批次。已有 v3 结果和 v2 permission_denied 的失败 pilot 保留用于追溯，不覆盖。
 
 文件传输量和网络带宽为空且带明确未采集状态是本轮预期，不是验收遗漏；它们没有任务级传输观测，不能强行变成零值。

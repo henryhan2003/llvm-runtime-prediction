@@ -2336,7 +2336,7 @@ def parse_process_probe_metrics(
         "fs_inputs",
         "fs_outputs",
     }
-    if not required.issubset(values) or values["probe_version"] not in {"1", "2", "3"}:
+    if not required.issubset(values) or values["probe_version"] not in {"1", "2", "3", "4"}:
         return None, None, {}
     try:
         elapsed_ns = int(values["elapsed_ns"])

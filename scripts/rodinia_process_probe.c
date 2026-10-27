@@ -47,10 +47,14 @@ static void read_child_io(const char *path, pid_t child, struct io_snapshot *sna
     }
     unsigned int found = 0;
     long report_pid = -1;
+    int collector_version = -1;
     char report_status[64] = "";
     char line[256], name[64];
     unsigned long long value;
     while (fgets(line, sizeof(line), stream) != NULL) {
+        if (sscanf(line, "io_collector_version=%d", &collector_version) == 1) {
+            continue;
+        }
         if (sscanf(line, "io_child_pid=%ld", &report_pid) == 1) {
             continue;
         }
@@ -77,10 +81,16 @@ static void read_child_io(const char *path, pid_t child, struct io_snapshot *sna
     if (read_failed || report_pid != (long)child || report_status[0] == '\0') {
         snapshot->status = "invalid_self_io_snapshot";
         snprintf(snapshot->error, sizeof(snapshot->error), "incomplete or mismatched-PID self I/O report");
+    } else if (collector_version != 4) {
+        snapshot->status = "incompatible_self_io_collector";
+        snprintf(snapshot->error, sizeof(snapshot->error), "expected v4 self I/O collector; rebuild probe and library together");
     } else if (strcmp(report_status, "ok") != 0) {
         snapshot->status = "self_io_collection_failed";
     } else {
         snapshot->status = found == 127 ? "ok" : "invalid_self_io_snapshot";
+        if (found != 127) {
+            snprintf(snapshot->error, sizeof(snapshot->error), "incomplete self I/O counters");
+        }
     }
 }
 
@@ -174,7 +184,7 @@ int main(int argc, char **argv) {
     }
     int write_failed = fprintf(
         metrics,
-        "probe_version=3\n"
+        "probe_version=4\n"
         "child_pid=%ld\n"
         "elapsed_ns=%lld\n"
         "returncode=%d\n"

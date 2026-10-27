@@ -78,7 +78,7 @@ def empty_metrics(reason: str = "not_collected") -> dict[str, object]:
 
 def parse_probe_extensions(values: dict[str, str]) -> dict[str, object]:
     metrics = empty_metrics("not_collected_probe_v1")
-    if values.get("probe_version") not in {"2", "3"}:
+    if values.get("probe_version") not in {"2", "3", "4"}:
         return metrics
     status = values.get("io_status", "invalid_probe_io")
     metrics["process_io_collection_status"] = status
@@ -123,7 +123,7 @@ def summarize(records: list[dict[str, object]]) -> dict[str, object]:
 
 def schema_description() -> dict[str, object]:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "prediction_role": "post_execution_supervision_labels_only_not_direct_static_inputs",
         "scope": "launched command; CPU covers its threads; proc I/O includes waited-for children; RSS is not summed process-tree memory",
         "aggregation": "arithmetic mean per successful measured invocation; warmup excluded; missing I/O invalidates its summary mean",
@@ -138,8 +138,9 @@ def schema_description() -> dict[str, object]:
                               "unit": "syscalls" if "syscalls" in field else "bytes"}
                       for source, field in IO_PROBE_FIELDS.items()},
         "io_snapshot": "Linux dynamic-loader normal-exit callback reads /proc/self/io before address-space teardown; PID-checked sidecar; no periodic sampling",
+        "io_collector_implementation": "v4 uses syscall(SYS_openat/read/write/close) to avoid benchmark read/write symbol interposition; sidecar version must match probe",
         "runtime_boundary": "fork/exec through wait4; includes preload startup and exit callback overhead, excludes parent report parsing",
         "file_transfer_and_bandwidth": "missing, not zero: no task-attributed workflow file-transfer instrumentation; never copied from host Prometheus",
         "io_limits": "normal dynamically linked program exit only; static binaries, _exit, fatal signals or callbacks bypassing loader cleanup yield missing, not zero; late cleanup after the callback is outside the I/O snapshot; rchar/wchar include redirected output and loader overhead; mmap is not fully represented; collector report writes are excluded from I/O snapshot",
-        "comparison": "v3 self-collection changes instrumentation and timing overhead; do not silently mix old and new batches",
+        "comparison": "v3/v4 self-collection includes instrumentation overhead; preserve backend and collection batch; do not silently mix old and new timings",
     }
