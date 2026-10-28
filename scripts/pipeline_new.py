@@ -29,6 +29,11 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 try:
+    import resource_load
+except ImportError:
+    from scripts import resource_load
+
+try:
     import cpu_runtime_parameters as cpu_runtime
 except ImportError:
     from scripts import cpu_runtime_parameters as cpu_runtime
@@ -2125,10 +2130,13 @@ def collect_prometheus_three_phase_metrics(
     timeout_seconds: float,
     queries: dict[str, str],
     context_seconds: float,
+    sample_guard=None,
 ) -> dict[str, object]:
     phase_results: dict[str, dict[str, object]] = {}
     for phase in PROMETHEUS_PHASES:
         try:
+            if sample_guard is not None:
+                sample_guard(phase, *windows[phase])
             phase_results[phase] = collect_prometheus_host_metrics(
                 base_url,
                 *windows[phase],
@@ -2136,6 +2144,9 @@ def collect_prometheus_three_phase_metrics(
                 timeout_seconds,
                 queries,
             )
+            if sample_guard is not None and any(phase_results[phase].get(field, "") == "" for field in
+                ["host_cpu_usage_pct_mean", "host_memory_used_bytes_mean"]):
+                raise RuntimeError("Insufficient valid CPU/memory values despite fresh target timestamps")
         except Exception as exc:
             phase_results[phase] = empty_prometheus_result(
                 *windows[phase],
@@ -2437,6 +2448,12 @@ def run_monitored_command(
         timed_out = True
         _kill_process_group(process)
         stdout, stderr = process.communicate()
+    except BaseException:
+        _kill_process_group(process)
+        process.communicate()
+        if metrics_directory is not None:
+            metrics_directory.cleanup()
+        raise
     elapsed = time.perf_counter() - start
     returncode = process.returncode
     if os.name == "nt":
@@ -2538,6 +2555,7 @@ def run_program(
     measurement_seconds: float,
     min_measured_runs: int,
     prometheus_context_seconds: float,
+    load_guard=None,
 ) -> tuple[
     list[dict[str, object]],
     dict[str, object],
@@ -2552,10 +2570,14 @@ def run_program(
 
     def execute(phase: str, index: int) -> None:
         nonlocal error, success
+        if load_guard is not None:
+            load_guard.before_invocation(phase, index)
         result, elapsed, timed_out, process_metrics = run_monitored_command(
             [str(exe_path)],
             timeout=timeout,
         )
+        if load_guard is not None:
+            load_guard.check()
         ok = not timed_out and result.returncode == 0
         status = "timeout" if timed_out else ("success" if ok else "failed")
         PIPELINE_BENCHMARK_DURATION.labels(dataset=dataset, phase=phase).observe(elapsed)
@@ -2580,13 +2602,17 @@ def run_program(
             }
         )
 
+    loaded_before = load_guard.before_window(prometheus_context_seconds) if load_guard is not None else None
     for index in range(1, warmup + 1):
         execute("warmup", index)
 
-    before_start_timestamp = time.time()
-    if prometheus_context_seconds > 0:
-        time.sleep(prometheus_context_seconds)
-    before_end_timestamp = time.time()
+    if loaded_before is not None:
+        before_start_timestamp, before_end_timestamp = loaded_before
+    else:
+        before_start_timestamp = time.time()
+        if prometheus_context_seconds > 0:
+            time.sleep(prometheus_context_seconds)
+        before_end_timestamp = time.time()
 
     measurement_start_timestamp = time.time()
     measurement_start = time.perf_counter()
@@ -2610,6 +2636,10 @@ def run_program(
     if prometheus_context_seconds > 0:
         time.sleep(prometheus_context_seconds)
     after_end_timestamp = time.time()
+    if load_guard is not None:
+        load_guard.record_windows({"before": (before_start_timestamp, before_end_timestamp),
+            "during": (measurement_start_timestamp, measurement_end_timestamp),
+            "after": (after_start_timestamp, after_end_timestamp)})
 
     measured_records = [record for record in records if record["phase"] == "measure"]
     summary = {
@@ -2780,16 +2810,21 @@ def process_program(
     run_success = False
     run_error = ""
     if build_success and not args.no_run:
-        run_records, runtime_summary, run_success, run_error, measurement_windows = run_program(
-            exe_path,
-            args.warmup,
-            args.runs,
-            args.timeout,
-            args.dataset,
-            args.measurement_seconds,
-            args.min_measured_runs,
-            args.prometheus_context_seconds if args.prometheus_exporter != "off" else 0.0,
-        )
+        with resource_load.session(args, sys.modules[__name__], {
+            "dataset": args.dataset, "program_id": program.program_id, "input_id": input_id,
+            "env_id": args.env_id, "compile_config_id": args.compile_config_id,
+        }) as load_guard:
+            run_records, runtime_summary, run_success, run_error, measurement_windows = run_program(
+                exe_path,
+                args.warmup,
+                args.runs,
+                args.timeout,
+                args.dataset,
+                args.measurement_seconds,
+                args.min_measured_runs,
+                args.prometheus_context_seconds if args.prometheus_exporter != "off" else 0.0,
+                load_guard,
+            )
         measurement_summary = {
             field: runtime_summary.get(field, "")
             for field in MEASUREMENT_SUMMARY_FIELDS
@@ -2859,6 +2894,8 @@ def process_program(
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate AST/CFG/LLVM IR and collect runtime prediction features.")
+    resource_load.add_arguments(parser)
+    parser.add_argument("--results-dir", type=Path, default=None, help="Optional isolated output directory; required for load experiments.")
     parser.add_argument("--source-dir", default=str(DEFAULT_SOURCE_DIR), help="Directory containing source files.")
     parser.add_argument("--dataset", default="test", help="Dataset label written to CSV.")
     parser.add_argument("--task-type", default="mixed_test", help="Task type label written to CSV.")
@@ -2968,6 +3005,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global RESULTS_DIR, AST_DIR, IR_DIR, CFG_DIR, BUILD_DIR
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     if args.warmup < 0:
@@ -2999,6 +3037,18 @@ def main(argv: list[str] | None = None) -> int:
         args.prometheus_job,
         args.prometheus_instance,
     )
+
+    if args.load_config is not None and args.results_dir is None:
+        parser.error("--load-config requires a fresh --results-dir")
+    if args.results_dir is not None:
+        RESULTS_DIR = args.results_dir.resolve()
+    try:
+        resource_load.validate_args(args, RESULTS_DIR)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.load_config is not None:
+        artifacts = RESULTS_DIR / "artifacts"
+        AST_DIR, IR_DIR, CFG_DIR, BUILD_DIR = (artifacts / name for name in ["ast", "llvm_ir", "cfg", "build"])
 
     ensure_dirs()
     static_environment = collect_static_environment()
@@ -3139,6 +3189,7 @@ def main(argv: list[str] | None = None) -> int:
                     max(args.prometheus_query_timeout, 0.1),
                     host_metric_queries,
                     args.prometheus_context_seconds,
+                    resource_load.phase_guard(args, summary_row["program_id"], summary_row["input_id"]),
                 )
             except Exception as exc:
                 metrics = empty_prometheus_three_phase_result(
@@ -3232,6 +3283,7 @@ def main(argv: list[str] | None = None) -> int:
             write_csv(RESULTS_DIR / "run_summary.csv", summary_rows, summary_fields),
             write_csv(result_path, combined_rows, results_fields),
         ]
+        resource_load.finalize(args, output_paths[3], output_paths[1], summary_rows, run_rows)
 
         manifest = environment_manifest(args, static_environment)
         output_paths.append(write_text(

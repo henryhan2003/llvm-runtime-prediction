@@ -30,6 +30,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 try:
+    import resource_load
+except ImportError:
+    from scripts import resource_load
+
+try:
     import cpu_runtime_parameters as cpu_runtime
 except ImportError:
     from scripts import cpu_runtime_parameters as cpu_runtime
@@ -621,6 +626,10 @@ def _run_measured_posix(
             timer.start()
             try:
                 returncode = process.wait()
+            except BaseException:
+                _kill_process_group(process)
+                process.wait()
+                raise
             finally:
                 timer.cancel()
                 timer.join()
@@ -983,15 +992,17 @@ def collect_static_features(
     c_compiler: str,
     cxx_compiler: str,
     opt_level: str,
+    artifact_root: Path | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     try:
         import pipeline_new as core
     except Exception as exc:
         return empty_static("unavailable"), [f"static pipeline import failed: {exc}"]
 
-    core.AST_DIR = PROJECT_ROOT / "ast" / "rodinia_openmp"
-    core.IR_DIR = PROJECT_ROOT / "llvm_ir" / "rodinia_openmp"
-    core.CFG_DIR = PROJECT_ROOT / "cfg" / "rodinia_openmp"
+    output_root = artifact_root or PROJECT_ROOT
+    core.AST_DIR = output_root / "ast" / "rodinia_openmp"
+    core.IR_DIR = output_root / "llvm_ir" / "rodinia_openmp"
+    core.CFG_DIR = output_root / "cfg" / "rodinia_openmp"
     core.ensure_dirs()
 
     workdir = openmp_root / spec.workdir
@@ -1190,6 +1201,7 @@ def measure_input(
     timeout: float,
     phase_windows: dict[str, tuple[float, float]] | None = None,
     prometheus_context_seconds: float = 0.0,
+    load_guard=None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     workdir = openmp_root / spec.workdir
     executable = (workdir / spec.executable).resolve()
@@ -1206,9 +1218,13 @@ def measure_input(
     warmup_completed = 0
 
     def execute(phase: str, index: int) -> ProcessResult:
+        if load_guard is not None:
+            load_guard.before_invocation(phase, index)
         started_at = datetime.now().astimezone().isoformat(timespec="seconds")
         run_id = f"{session_id}-{spec.benchmark_id}-{input_spec.input_id}-{phase}-{index}"
         result = run_process(command, workdir, environment, timeout, True, True)
+        if load_guard is not None:
+            load_guard.check()
         all_rows.append(
             _run_row(
                 session_id,
@@ -1223,6 +1239,7 @@ def measure_input(
         )
         return result
 
+    loaded_before = load_guard.before_window(prometheus_context_seconds) if load_guard is not None else None
     for index in range(1, warmup + 1):
         result = execute("warmup", index)
         if not result.success:
@@ -1232,10 +1249,13 @@ def measure_input(
 
     measured_runtime_total = 0.0
     if warmup_completed == warmup:
-        before_start = time.time()
-        if prometheus_context_seconds > 0:
-            time.sleep(prometheus_context_seconds)
-        before_end = time.time()
+        if loaded_before is not None:
+            before_start, before_end = loaded_before
+        else:
+            before_start = time.time()
+            if prometheus_context_seconds > 0:
+                time.sleep(prometheus_context_seconds)
+            before_end = time.time()
         during_start = time.time()
         index = 1
         while True:
@@ -1259,6 +1279,9 @@ def measure_input(
         if prometheus_context_seconds > 0:
             time.sleep(prometheus_context_seconds)
         after_end = time.time()
+        if load_guard is not None:
+            load_guard.record_windows({"before": (before_start, before_end), "during": (during_start, during_end),
+                                       "after": (after_start, after_end)})
         if phase_windows is not None:
             phase_windows.update(
                 {
@@ -1350,6 +1373,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build and measure Rodinia 3.1 OpenMP benchmarks on Linux."
     )
+    resource_load.add_arguments(parser)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--rodinia-root", type=Path, default=DEFAULT_RODINIA_ROOT)
     parser.add_argument("--results-dir", type=Path, default=DEFAULT_RESULTS_DIR)
@@ -1486,6 +1510,11 @@ def main(argv: list[str] | None = None) -> int:
         args.prometheus_job,
         args.prometheus_instance,
     )
+    try:
+        resource_load.validate_args(args, args.results_dir)
+    except ValueError as exc:
+        print(f"[pipeline] invalid load experiment: {exc}", file=sys.stderr)
+        return 2
     environment_features = collect_environment(args.c_compiler, args.cxx_compiler)
     environment_features["env_id"] = args.env_id
     available_logical_cores = int(environment_features["cpu_logical_core_count"])
@@ -1532,6 +1561,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.c_compiler,
                 args.cxx_compiler,
                 args.opt_level,
+                args.results_dir.resolve() / "artifacts" if args.load_config is not None else None,
             )
         else:
             static_features, static_errors = empty_static("not_requested"), []
@@ -1590,19 +1620,24 @@ def main(argv: list[str] | None = None) -> int:
                     f"warmup={args.warmup}, budget={args.measurement_seconds:g}s"
                 )
                 phase_windows: dict[str, tuple[float, float]] = {}
-                measured, detail_rows, run_errors = measure_input(
-                    session_id,
-                    spec,
-                    item,
-                    openmp_root,
-                    args.warmup,
-                    args.runs,
-                    args.measurement_seconds,
-                    args.min_measured_runs,
-                    args.timeout,
-                    phase_windows,
-                    args.prometheus_context_seconds if host_metric_queries else 0.0,
-                )
+                with resource_load.session(args, pipeline_core(), {
+                    "dataset": "Rodinia-3.1", "execution_model": "OpenMP", "session_id": session_id,
+                    "program_id": spec.benchmark_id, "input_id": item.input_id, "env_id": args.env_id,
+                }) as load_guard:
+                    measured, detail_rows, run_errors = measure_input(
+                        session_id,
+                        spec,
+                        item,
+                        openmp_root,
+                        args.warmup,
+                        args.runs,
+                        args.measurement_seconds,
+                        args.min_measured_runs,
+                        args.timeout,
+                        phase_windows,
+                        args.prometheus_context_seconds if host_metric_queries else 0.0,
+                        load_guard,
+                    )
                 base_row.update(measured)
                 run_rows.extend(detail_rows)
                 errors.extend(run_errors)
@@ -1618,6 +1653,7 @@ def main(argv: list[str] | None = None) -> int:
                                 args.prometheus_query_timeout,
                                 host_metric_queries,
                                 args.prometheus_context_seconds,
+                                resource_load.phase_guard(args, spec.benchmark_id, item.input_id),
                             )
                         )
                     except Exception as exc:
@@ -1680,6 +1716,7 @@ def main(argv: list[str] | None = None) -> int:
     environment_path = results_dir / f"rodinia_openmp_environment_{session_id}.json"
     write_csv(summary_path, summary_rows, SUMMARY_FIELDS)
     write_csv(runs_path, run_rows, RUN_FIELDS)
+    resource_load.finalize(args, summary_path, runs_path, summary_rows, run_rows)
     environment_path.parent.mkdir(parents=True, exist_ok=True)
     environment_path.write_text(
         json.dumps(

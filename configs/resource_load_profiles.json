@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "safety": {
+    "max_cpu_fraction": 0.75,
+    "max_memory_bytes": 8589934592,
+    "memory_reserve_fraction": 0.20,
+    "memory_reserve_bytes": 2147483648,
+    "max_duration_seconds": 1200,
+    "stabilization_timeout_seconds": 120,
+    "stable_window_seconds": 10,
+    "min_raw_scrapes": 5,
+    "cpu_tolerance_pct": 8,
+    "max_baseline_cpu_pct": 15,
+    "max_temperature_celsius": 85
+  },
+  "cpu_profiles": [
+    {"profile_id": "CPU_IDLE", "load_type": "idle"},
+    {"profile_id": "CPU_LOW", "load_type": "cpu", "target_cpu_fraction": 0.25},
+    {"profile_id": "CPU_MEDIUM", "load_type": "cpu", "target_cpu_fraction": 0.50},
+    {"profile_id": "CPU_HIGH", "load_type": "cpu", "target_cpu_fraction": 0.75}
+  ],
+  "memory_profiles": [
+    {"profile_id": "MEMORY_IDLE", "load_type": "idle"},
+    {"profile_id": "MEMORY_LOW", "load_type": "memory", "memory_budget_fraction": 0.25},
+    {"profile_id": "MEMORY_MEDIUM", "load_type": "memory", "memory_budget_fraction": 0.50},
+    {"profile_id": "MEMORY_HIGH", "load_type": "memory", "memory_budget_fraction": 0.75}
+  ],
+  "pilot_programs": ["gemm", "jacobi-2d"],
+  "pilot_input_profiles": ["MINI_DATASET", "MEDIUM_DATASET", "EXTRALARGE_DATASET"]
+}

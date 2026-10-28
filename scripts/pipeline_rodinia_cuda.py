@@ -877,15 +877,17 @@ def collect_static_features(
     opt_level: str,
     cuda_dir: Path,
     cuda_arch: str,
+    artifact_root: Path | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     try:
         core = base.pipeline_core()
     except Exception as exc:
         return empty_static("unavailable"), [f"static pipeline import failed: {exc}"]
 
-    core.AST_DIR = PROJECT_ROOT / "ast" / "rodinia_cuda"
-    core.IR_DIR = PROJECT_ROOT / "llvm_ir" / "rodinia_cuda"
-    core.CFG_DIR = PROJECT_ROOT / "cfg" / "rodinia_cuda"
+    output_root = artifact_root or PROJECT_ROOT
+    core.AST_DIR = output_root / "ast" / "rodinia_cuda"
+    core.IR_DIR = output_root / "llvm_ir" / "rodinia_cuda"
+    core.CFG_DIR = output_root / "cfg" / "rodinia_cuda"
     core.ensure_dirs()
     workdir = cuda_root / spec.workdir
     declared = [(workdir / source).resolve() for source in spec.ast_owned_sources]
@@ -1218,6 +1220,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build and measure Rodinia 3.1 CUDA benchmarks on an NVIDIA Linux host."
     )
+    base.resource_load.add_arguments(parser)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--rodinia-root", type=Path, default=DEFAULT_RODINIA_ROOT)
     parser.add_argument("--results-dir", type=Path, default=DEFAULT_RESULTS_DIR)
@@ -1475,6 +1478,11 @@ def main(argv: list[str] | None = None) -> int:
     host_queries = base.pipeline_core().prometheus_host_queries(
         args.prometheus_exporter, args.prometheus_job, args.prometheus_instance
     )
+    try:
+        base.resource_load.validate_args(args, args.results_dir)
+    except ValueError as exc:
+        print(f"[pipeline] invalid load experiment: {exc}", file=sys.stderr)
+        return 2
     context_seconds = (
         args.prometheus_context_seconds
         if host_queries or args.gpu_metrics == "nvidia-smi"
@@ -1513,6 +1521,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.opt_level,
                 cuda_dir,
                 cuda_arch,
+                args.results_dir.resolve() / "artifacts" if args.load_config is not None else None,
             )
             print(
                 f"[static] {spec.benchmark_id}: status={static_features['static_status']}, "
@@ -1618,19 +1627,24 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         sampler = None
                 try:
-                    measured, details, run_errors = base.measure_input(
-                        session_id,
-                        spec,
-                        item,
-                        cuda_root,
-                        args.warmup,
-                        args.runs,
-                        args.measurement_seconds,
-                        args.min_measured_runs,
-                        args.timeout,
-                        phase_windows,
-                        context_seconds,
-                    )
+                    with base.resource_load.session(args, base.pipeline_core(), {
+                        "dataset": "Rodinia-3.1", "execution_model": "CUDA", "session_id": session_id,
+                        "program_id": spec.benchmark_id, "input_id": item.input_id, "env_id": args.env_id,
+                    }) as load_guard:
+                        measured, details, run_errors = base.measure_input(
+                            session_id,
+                            spec,
+                            item,
+                            cuda_root,
+                            args.warmup,
+                            args.runs,
+                            args.measurement_seconds,
+                            args.min_measured_runs,
+                            args.timeout,
+                            phase_windows,
+                            context_seconds,
+                            load_guard,
+                        )
                 finally:
                     if sampler is not None:
                         sampler.stop()
@@ -1681,6 +1695,7 @@ def main(argv: list[str] | None = None) -> int:
                                 args.prometheus_query_timeout,
                                 host_queries,
                                 context_seconds,
+                                base.resource_load.phase_guard(args, spec.benchmark_id, item.input_id),
                             )
                         )
                         if not row.get("prometheus_three_phase_collection_success"):
@@ -1738,6 +1753,7 @@ def main(argv: list[str] | None = None) -> int:
     environment_path = results_dir / f"rodinia_cuda_environment_{session_id}.json"
     base.write_csv(summary_path, summary_rows, SUMMARY_FIELDS)
     base.write_csv(runs_path, run_rows, RUN_FIELDS)
+    base.resource_load.finalize(args, summary_path, runs_path, summary_rows, run_rows)
     environment_path.parent.mkdir(parents=True, exist_ok=True)
     environment_path.write_text(
         json.dumps(
