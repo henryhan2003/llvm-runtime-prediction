@@ -6,7 +6,7 @@
 
 已实现三条现有 Pipeline 的可选 CPU/内存后台负载功能、独立实验记录、无压力自检、试验计划和结果验证器。没有重新设计监控系统，没有新建 Prometheus 指标，没有增加主 CSV 列，没有训练预测模型。
 
-按照本轮随后确认的要求“先完成代码与测试，实测由我在服务器执行”，本机只做代码检查、已有数据审计、模拟单元测试和计划生成。**真实 Linux 负载试运行尚未执行，状态为 PENDING_SERVER_PILOT，不能把模拟测试或已有无负载结果称为新负载实验结果。** CPU 负载能否达到设定水平、不同压力下真实时间差异，以及 Linux 实际进程回收效果，均等待服务器试运行验收。
+按照本轮随后确认的要求“先完成代码与测试，实测由我在服务器执行”，本机只做代码检查、已有数据审计、模拟单元测试和计划生成。原交付状态为 PENDING_SERVER_PILOT。用户随后在服务器开展了部分试运行，见第 8 节补充记录；**完整试运行尚未通过，不能把模拟测试、旧无负载结果或安全中止的记录称为合格的新负载性能结果。**
 
 ## 2. 原有 Pipeline 与数据审计
 
@@ -66,7 +66,7 @@ GPU 审计结论：当前 CUDA 的 GPU 三阶段是 nvidia-smi，不是 Promethe
 - `scripts/audit_load_aware_pipeline.py`：只读历史数据审计。
 - `scripts/check_load_aware_pipeline.py`：无压力回归测试及静态提取/CSV 声明的语法树比对。
 - `configs/resource_load_profiles.json`：CPU 四档、内存容量四档、安全阈值、默认试运行程序。
-- `tests/test_resource_load.py`：28 项模拟及纯计算测试。
+- `tests/test_resource_load.py`：30 项模拟及纯计算测试。
 
 静态特征的算法、白名单、计数方式和编译参数没有修改。仅在负载模式下将表示文件写到本次结果目录内的 `artifacts/`；这是输出位置隔离，避免覆盖以前的 AST/CFG/IR。Rodinia 的运行二进制仍按原 Makefile 在其工作目录构建，既有 build 行为未重写。不要由静态 IR 的 `--opt-level O2` 推断全部 Rodinia 运行 Makefile 已统一 O2。
 
@@ -111,7 +111,7 @@ IDLE 表示不额外施压，不承诺主机实测 CPU 等于零。LOW/MEDIUM/HI
 
 - 默认只生成计划；实际运行必须同时给出 `--execute --permission-confirmed`，程序不代替人获取共享服务器使用许可。
 - 互斥锁防止本工具在同机叠加多个实验；不能据此断言其他用户没有任务，仍需人工确认与实测基线检查。
-- 监测可用内存、Swap 增量和可读取的温度；超过限制会失败并清理。没有温度/频率传感器时记录不可用，不填零，也不声称已验证热稳定。
+- 监测可用内存、Swap 增量和可读取的温度；默认温度策略为 `abort`，达到配置中的 85℃时失败并清理。显式指定 `--temperature-policy record-only` 后，仅取消脚本启动前和监测线程内的温度中止判断，温度及最高测点仍持续记录，其他保护不变；不修改 BIOS、内核或设备自身保护。没有温度/频率传感器时记录不可用，不填零，也不声称已验证热稳定。
 - 默认每配置压力最长 1200 秒，配置硬上限 3600 秒；每次目标调用仍受原有 timeout 控制。完整 trial 另有总超时。
 - SIGINT/SIGTERM/SIGHUP、Python 异常、提前退出均走清理；额外 supervisor 检测 Pipeline 父进程消失并收回本次进程组。只操作本次创建的组，不使用 `pkill stress-ng` 等按名称清理。
 - 目标进程在用户中断时也会被回收，修补了原计时包装在 KeyboardInterrupt 下可能留下独立目标进程的路径。
@@ -136,13 +136,31 @@ PolyBench 没有 session_id 列，运行明细已有唯一 run_id；使用“独
 
 ## 8. 本机验证结果与待验收项
 
-`python scripts/check_load_aware_pipeline.py`：86 项测试，85 项通过，1 项 Linux/POSIX 原生 probe 测试在 Windows 跳过，0 失败。包含原有 58 项与新增 28 项。`unit_test_report.json` 还对 Git 基线中的静态 extract/generate/infer 函数与字段声明做语法树比较，结果 PASS。模拟 CPU 生命周期并没有启动真实 stress-ng。
+`python scripts/check_load_aware_pipeline.py`：95 项测试，94 项通过，1 项 Linux/POSIX 原生 probe 测试在 Windows 跳过，0 失败。包含原有 58 项与新增 37 项。`unit_test_report.json` 还对 Git 基线中的静态 extract/generate/infer 函数与字段声明做语法树比较，结果 PASS。模拟 CPU 生命周期并没有启动真实 stress-ng。
 
 已生成 24 个 CPU 试运行 trial 的计划：GEMM（较高算术密度）和 Jacobi-2D（邻域更新、访存与重用特征不同），各 MINI/MEDIUM/EXTRALARGE，乘四档 CPU。压力级别顺序按配置轮换/反转，避免永远先 IDLE 后 HIGH。可选择独立的 memory 家族，仍不把 CPU 和内存压力同时施加在一条 trial 上。
 
 旧无新增负载数据中，GEMM 三档中位时间约为 0.000497、0.010271、6.975786 秒，Jacobi-2D 约为 0.000533、0.014751、14.673943 秒。这些仅用来选择试运行程序和超时，**不是本轮负载实验结果，不能据此给出压力导致的时间变化**。
 
 待服务器验证：实际 CPU 四档、驻留内存变化、Linux 活进程清理、温度/频率可用性、目标时间差异。验证器会重算运行明细中位数、检查至少 3 次有效测量、核对真实采样时间/控制目标/输出哈希和 before→首次调用→during→after→释放顺序；失败不允许作为合格批量前置结果。
+
+### 8.1 2026-10-28 服务器部分试运行补充
+
+用户提供的目录为 `/data_disk/hanli/load_cpu_pilot_20261028_163411`，失败配置为 `cpu__gemm__EXTRALARGE_DATASET__CPU_HIGH`。稳定阶段主机 CPU 平均 75.1685%、最大 75.3100%，说明该阶段达到了预设背景压力。随后在正式测量过程中出现 `Safety abort: temperature cap reached`，日志中的最高温度读数为 85.5℃，超过预设 85℃；sidecar 的 `cleanup_success=True`，stress-ng 日志显示其 64 个 worker 随后被停止。
+
+这支持“温度保护触发”的诊断，不支持将这次目标程序实验记为成功。stress-ng 的 `successful run` 只说明压力工具本身的退出统计，不是完整 trial 的验收结论。目前没有本机可读的完整服务器结果目录，不能汇总此前已完成组的真实时间差异，也不能保证它们已通过最终整体验证。
+
+原温度汇总取所有可读 thermal/hwmon 传感器的最大值，不能直接叫 CPU 核心温度；85℃是本试验的保守配置，不是按 CPU 型号自动识别的厂商极限。旧记录未保存最高测点的身份，不能事后确定 85.5℃来自哪一个传感器。上一次诊断修补补充了 sidecar 的 `temperature_max_source`（设备名、测点标签、sysfs 路径）以及错误消息详情，不改变最高值算法、默认 85℃阈值、负载比例或主 CSV。测试验证最高温度可以来自非 CPU 设备，缺失温度仍为空而非零。该诊断改进与下面的可选策略均需另行同步到服务器；没有重启真实压力。
+
+### 8.2 显式选择温度只记录模式
+
+用户随后要求不因脚本温度阈值而终止。新增 `--temperature-policy abort|record-only`，默认 `abort` 保持旧行为；不静默修改共享配置的默认值。选择 `record-only` 时，配置中保留原来的阈值用于追溯，但不作为启动或运行中的拒绝条件，控制台及每条 trial 的 pipeline.log 显示明确警告。CPU 目标仍为 25/50/75%，内存余量、Swap、持续时间、监控充分性、权限、回收等条件不放宽。持续记录最高温度、对应测点及原有平均 CPU 频率，不能据此声称能准确检测所有形式的硬件降频。
+
+温度策略进入每配置 JSON 并由配置哈希关联，不进入主结果 CSV，也不作为模型输入。分析比较表额外记录 `temperature_policy` 与 `temperature_peak_observed_celsius_ANALYSIS_ONLY`，验证报告记录策略集合和只记录配置数，并明确 `thermal_safety_and_absence_of_throttling_validated=False`。报告 PASS 只代表采集、计时、负载控制和清理检查通过，不证明温度安全或没有降频。后续 batch 要求使用与通过 pilot 相同的温度策略，避免默认沿用另一策略下的前置验收。
+
+用户此次提供的是压力停止后的温度快照：k10temp 的 Tdie/Tctl 43.12℃、CCD 最高 48℃，两个 NVMe Composite 分别 61.85℃和 59.85℃。它不能定位此前 85.5℃测点，也不能证明持续运行安全。AMD 的 [3970X 官方规格](https://www.amd.com/en/support/downloads/drivers.html/processors/ryzen-threadripper/ryzen-threadripper-3000-series/amd-ryzen-threadripper-3970x.html)列出 Tjmax 95℃；该数值不是推荐长期运行温度，不能套用到 NVMe，也不用于自动调高本工具阈值。测点含义参考 [Linux k10temp 文档](https://kernel.org/doc/html/v5.10/hwmon/k10temp.html)。
+
+旧目录和旧 manifest 不重写、不续跑，也不与新策略结果自动拼接。旧 sidecar 缺少策略键时按历史 `abort` 解释；旧 manifest 的代码哈希发生变化仍应报告，不抹掉版本差异。本轮只做本机测试和计划验证，没有执行服务器压力或重新采集时间。
 
 ## 9. 服务器执行指令
 
@@ -151,14 +169,15 @@ PolyBench 没有 session_id 列，运行明细已有唯一 run_id；使用“独
 ```bash
 cd /data_disk/hanli/llvm-runtime-prediction
 conda activate llvm-runtime
-sudo apt-get update
-sudo apt-get install -y stress-ng
+export PATH="$PATH:$HOME/.local/conda-envs/load-tools/bin"
+command -v stress-ng
+stress-ng --version
 python -m pip install -r requirements.txt
 python scripts/check_load_aware_pipeline.py
 python scripts/run_load_experiments.py --preflight-only
 ```
 
-这里只新增需要 stress-ng；Python 新模块均使用标准库，不新增机器学习依赖。Prometheus、node_exporter、CUDA 的 nvidia-smi 沿用已有部署。安装命令由使用者在获得权限后执行。
+这里只新增需要 stress-ng；本服务器已使用独立 Conda 前缀安装，上面的 PATH 必须在实际执行实验的 tmux pane 中设置，无需 sudo。Python 新模块均使用标准库，不新增机器学习依赖。Prometheus、node_exporter、CUDA 的 nvidia-smi 沿用已有部署。
 
 只生成计划，不启动压力：
 

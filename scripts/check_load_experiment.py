@@ -37,7 +37,9 @@ def validate_trial(trial):
                 if not p.name.endswith(".ready.json")]
     require(len(sidecars) == 1, "Expected exactly one load sidecar per isolated configuration")
     record = sidecars[0]
-    require(record["config"] == load.read_config(trial["config_path"]), "Sidecar control configuration mismatch")
+    # Sidecars collected before the explicit policy option used the abort behavior.
+    config = {"temperature_policy": "abort", **record["config"]}
+    require(config == load.read_config(trial["config_path"]), "Sidecar control configuration mismatch")
     require(record["status"] == "PASS" and record["cleanup_success"] and record["before_load_control_validated"], "Load/monitoring/cleanup quality failed")
     require(record["config"]["profile_id"] == trial["profile_id"], "Profile identity mismatch")
     source = rows(record["outputs"]["summary_file"])
@@ -90,6 +92,10 @@ def validate_trial(trial):
         if field.startswith(("host_cpu_usage_pct_", "host_memory_used_bytes_")) and field.endswith("_mean"):
             result[field] = float(row[field]) if row[field] else ""
     result["scrape_interval_seconds"] = record["monitoring_preflight"]["scrape_interval_seconds"]
+    result["temperature_policy"] = config["temperature_policy"]
+    temperatures = [s["temperature_max_celsius"] for s in record.get("safety_samples", [])
+                    if isinstance(s.get("temperature_max_celsius"), (int, float)) and math.isfinite(s["temperature_max_celsius"])]
+    result["temperature_peak_observed_celsius_ANALYSIS_ONLY"] = max(temperatures) if temperatures else ""
     return result
 
 
@@ -131,6 +137,10 @@ def validate(manifest_path):
         "stage": manifest["stage"], "dataset": manifest["dataset"], "hostname": manifest.get("execution_host"),
         "validated_configurations": len(collected), "expected_configurations": len(manifest["trials"]),
         "cpu_four_levels_validated": complete_families["cpu"], "memory_four_levels_validated": complete_families["memory"],
+        "temperature_policies": sorted({item["temperature_policy"] for item in collected}),
+        "temperature_record_only_configurations": sum(item["temperature_policy"] == "record-only" for item in collected),
+        "thermal_safety_and_absence_of_throttling_validated": False,
+        "validation_scope": "Collection, timing, load control and cleanup only; PASS does not certify thermal safety or absence of throttling.",
         "errors": errors, "raw_csv_modified": False,
         "comparison_fields_are_analysis_not_a_prediction_whitelist": True}
     root = manifest_path.parent

@@ -43,14 +43,45 @@ class Fixture(unittest.TestCase):
 
 
 class ConfigAndSafetyTests(Fixture):
+    def test_temperature_peak_records_source_without_assuming_it_is_cpu(self):
+        cpu, disk = self.root / "cpu", self.root / "disk"
+        for directory, device, label, value in [(cpu, "k10temp", "Tdie", "70000"), (disk, "nvme", "Composite", "85500")]:
+            directory.mkdir()
+            (directory / "name").write_text(device)
+            (directory / "temp1_label").write_text(label)
+            (directory / "temp1_input").write_text(value)
+        def paths(path, pattern):
+            return [cpu / "temp1_input", disk / "temp1_input"] if path.as_posix() == "/sys/class/hwmon" else []
+        with mock.patch.object(load, "memory_info", return_value={"MemAvailable": 1000}), \
+             mock.patch.object(Path, "glob", autospec=True, side_effect=paths):
+            sample = load.safety_snapshot()
+        self.assertEqual(85.5, sample["temperature_max_celsius"])
+        self.assertEqual({"device": "nvme", "label": "Composite", "path": str(disk / "temp1_input")}, sample["temperature_max_source"])
+
+    def test_missing_temperature_is_not_fabricated_as_zero(self):
+        with mock.patch.object(load, "memory_info", return_value={"MemAvailable": 1000}), mock.patch.object(Path, "glob", return_value=[]):
+            sample = load.safety_snapshot()
+        self.assertIsNone(sample["temperature_max_celsius"])
+        self.assertIsNone(sample["temperature_max_source"])
+
     def test_config_rejects_unsafe_mixed_unknown_and_nonfinite_controls(self):
         bad = [{"target_cpu_fraction": .8, "load_type": "cpu"}, {"max_cpu_fraction": 1},
             {"load_type": "cpu", "target_cpu_fraction": .25, "memory_budget_fraction": .5},
             {"permission_confirmed": "false"}, {"target_cpu_fraction": float("nan")},
-            {"new_cpu_feature": .2}, {"min_raw_scrapes": 1}, {"max_duration_seconds": 99999}]
+            {"new_cpu_feature": .2}, {"min_raw_scrapes": 1}, {"max_duration_seconds": 99999},
+            {"temperature_policy": "off"}]
         for fields in bad:
             with self.subTest(fields=fields), self.assertRaises(ValueError):
                 load.read_config(self.config(**fields))
+
+    def test_temperature_policy_defaults_to_abort_and_record_only_is_explicit(self):
+        self.assertEqual("abort", load.read_config(self.config())["temperature_policy"])
+        session = load.LoadSession(self.args(self.config()), core, {})
+        with self.assertRaisesRegex(RuntimeError, "temperature cap"):
+            session.enforce_temperature_limit({"temperature_max_celsius": 85.5})
+        session = load.LoadSession(self.args(self.config(temperature_policy="record-only")), core, {})
+        session.enforce_temperature_limit({"temperature_max_celsius": 85.5})
+        self.assertEqual(85, session.config["max_temperature_celsius"])
 
     def test_memory_budget_is_capacity_and_reserve_bounded(self):
         config = load.read_config(self.config(load_type="memory", memory_budget_fraction=.75))
@@ -141,6 +172,39 @@ class ConfigAndSafetyTests(Fixture):
             session.watchdog()
         self.assertIn("temperature", session.error)
         cleanup.assert_called_once()
+
+    def test_record_only_watchdog_retains_hot_sample_without_temperature_abort(self):
+        session = load.LoadSession(self.args(self.config(temperature_policy="record-only")), core, {})
+        session.reserve = 10
+        session.record["memory_before"] = {"SwapTotal": 100, "SwapFree": 100}
+        sample = {"memory_available_bytes": 100, "temperature_max_celsius": 90}
+        with mock.patch.object(session.stop_event, "wait", side_effect=[False, True]), \
+             mock.patch.object(load, "safety_snapshot", return_value=sample), \
+             mock.patch.object(load, "memory_info", return_value={"SwapTotal": 100, "SwapFree": 100}), \
+             mock.patch.object(session, "stop_owned_process") as cleanup:
+            session.watchdog()
+        self.assertEqual("", session.error)
+        self.assertEqual([sample], session.record["safety_samples"])
+        cleanup.assert_not_called()
+
+    def test_record_only_does_not_disable_memory_swap_or_duration_guards(self):
+        for case in ["memory", "swap", "duration"]:
+            with self.subTest(case=case):
+                session = load.LoadSession(self.args(self.config(temperature_policy="record-only")), core, {})
+                session.reserve = 10
+                session.record["memory_before"] = {"SwapTotal": load.GIB, "SwapFree": load.GIB}
+                sample = {"memory_available_bytes": 5 if case == "memory" else 100, "temperature_max_celsius": 90}
+                if case == "duration":
+                    session.started = 0
+                memory = {"SwapTotal": load.GIB, "SwapFree": 0 if case == "swap" else load.GIB}
+                with mock.patch.object(session.stop_event, "wait", return_value=False), \
+                     mock.patch.object(load, "safety_snapshot", return_value=sample), \
+                     mock.patch.object(load, "memory_info", return_value=memory), \
+                     mock.patch.object(load.time, "monotonic", return_value=5000), \
+                     mock.patch.object(session, "stop_owned_process") as cleanup:
+                    session.watchdog()
+                self.assertIn({"memory": "memory", "swap": "swap", "duration": "duration"}[case], session.error)
+                cleanup.assert_called_once()
 
     def test_cleanup_signals_exact_owned_group_not_process_names(self):
         session = load.LoadSession(self.args(self.config()), core, {})
@@ -337,11 +401,36 @@ class PlanningTests(Fixture):
         self.assertEqual({"gemm", "jacobi-2d"}, {t["program"] for t in plan["trials"]})
         for trial in plan["trials"]:
             self.assertFalse(load.read_config(trial["config_path"])["permission_confirmed"])
+            self.assertEqual("abort", load.read_config(trial["config_path"])["temperature_policy"])
             command = trial["command"]
             self.assertEqual("3", command[command.index("--min-measured-runs") + 1])
             self.assertEqual(str(ROOT / "datasets/PolyBenchC-4.2.1"), command[command.index("--source-dir") + 1])
             self.assertIn("--load-config", command)
         self.assertNotEqual([t["profile_id"] for t in plan["trials"][:4]], [t["profile_id"] for t in plan["trials"][4:8]])
+
+    def test_record_only_plan_preserves_other_limits_and_never_starts_load(self):
+        args = runner.build_parser().parse_args(["--temperature-policy", "record-only"])
+        with mock.patch.object(runner.subprocess, "Popen") as spawn:
+            plan = runner.create_manifest(args, self.root)
+        spawn.assert_not_called()
+        for trial in plan["trials"]:
+            config = load.read_config(trial["config_path"])
+            self.assertEqual("record-only", config["temperature_policy"])
+            self.assertEqual(.75, config["max_cpu_fraction"])
+            self.assertEqual(1200, config["max_duration_seconds"])
+            self.assertFalse(config["permission_confirmed"])
+
+    def test_batch_gate_requires_matching_temperature_policy(self):
+        args = runner.build_parser().parse_args(["--stage", "batch", "--temperature-policy", "record-only"])
+        args.pilot_validation = self.root / "validation.json"
+        report = {"status": "PASS", "stage": "pilot", "dataset": "polybench",
+                  "hostname": runner.socket.gethostname(), "cpu_four_levels_validated": True}
+        load.write_json(args.pilot_validation, report)
+        with self.assertRaisesRegex(ValueError, "temperature policy"):
+            runner.check_batch_gate(args)
+        report["temperature_policies"] = ["record-only"]
+        load.write_json(args.pilot_validation, report)
+        runner.check_batch_gate(args)
 
     def test_catalog_covers_all_twenty_sizes_without_executing(self):
         for dataset, count in [("polybench", 600), ("openmp", 380), ("cuda", 440)]:
@@ -418,6 +507,33 @@ class ResultValidationTests(Fixture):
         validated = checker.validate_trial(trial)
         self.assertEqual(2., validated["runtime_sec_median"])
         self.assertEqual(25., validated["host_cpu_usage_pct_before_mean"])
+
+    def test_validator_accepts_legacy_sidecar_without_explicit_temperature_policy(self):
+        trial, record, sidecar = self.make_trial()
+        record["config"].pop("temperature_policy")
+        load.write_json(sidecar, record)
+        validated = checker.validate_trial(trial)
+        self.assertEqual("abort", validated["temperature_policy"])
+        self.assertEqual("", validated["temperature_peak_observed_celsius_ANALYSIS_ONLY"])
+
+    def test_record_only_validation_reports_policy_without_certifying_thermal_safety(self):
+        trial, record, sidecar = self.make_trial()
+        record["config"]["temperature_policy"] = "record-only"
+        record["safety_samples"] = [{"temperature_max_celsius": None}, {"temperature_max_celsius": 85.5}]
+        load.write_json(sidecar, record)
+        load.write_json(trial["config_path"], record["config"])
+        trial["config_sha256"] = hashlib.sha256(Path(trial["config_path"]).read_bytes()).hexdigest()
+        validated = checker.validate_trial(trial)
+        self.assertEqual("record-only", validated["temperature_policy"])
+        self.assertEqual(85.5, validated["temperature_peak_observed_celsius_ANALYSIS_ONLY"])
+        manifest = self.root / "manifest.json"
+        load.write_json(manifest, {"status": "COMPLETED", "stage": "batch", "dataset": "polybench",
+                                  "trials": [trial], "load_families": ["cpu"]})
+        report = checker.validate(manifest)
+        self.assertEqual("PASS", report["status"])
+        self.assertEqual(["record-only"], report["temperature_policies"])
+        self.assertEqual(1, report["temperature_record_only_configurations"])
+        self.assertFalse(report["thermal_safety_and_absence_of_throttling_validated"])
 
     def test_validator_rejects_load_cleanup_before_after_window(self):
         trial, record, sidecar = self.make_trial()

@@ -82,7 +82,8 @@ def create_manifest(args, root):
     profiles_path = ROOT / "configs/resource_load_profiles.json"
     definitions = json.loads(profiles_path.read_text(encoding="utf-8"))
     workload = workload_catalog(args.dataset, args.stage, args.program)
-    safety = {**definitions["safety"], "permission_confirmed": args.permission_confirmed}
+    safety = {**definitions["safety"], "permission_confirmed": args.permission_confirmed,
+              "temperature_policy": args.temperature_policy}
     if args.max_memory_gib is not None:
         safety["max_memory_bytes"] = int(args.max_memory_gib * load.GIB)
     trials = []
@@ -107,7 +108,8 @@ def create_manifest(args, root):
                     "results_dir": str(results), "command": command_for(args, program, size, info, config_path, results), "status": "PLANNED"})
     tracked = [profiles_path, ROOT / "configs/input_scales_20.json", ROOT / "scripts/resource_load.py",
                ROOT / "scripts/resource_load_memory_worker.py", ROOT / "scripts/resource_load_supervisor.py",
-               ROOT / "scripts/pipeline_new.py", ROOT / "scripts/pipeline_rodinia.py", ROOT / "scripts/pipeline_rodinia_cuda.py"]
+               ROOT / "scripts/pipeline_new.py", ROOT / "scripts/pipeline_rodinia.py", ROOT / "scripts/pipeline_rodinia_cuda.py",
+               ROOT / "scripts/run_load_experiments.py", ROOT / "scripts/check_load_experiment.py"]
     return {"schema_version": 1, "stage": args.stage, "status": "PLANNED", "dataset": args.dataset,
         "created_at_utc": datetime.now(timezone.utc).isoformat(), "execution_host": socket.gethostname() if args.execute else None,
         "trials": trials, "load_families": args.load_types, "prediction_features_changed": False,
@@ -125,6 +127,8 @@ def check_batch_gate(args):
         raise ValueError("Pilot validation has not passed")
     if report.get("hostname") != socket.gethostname() or not report.get("cpu_four_levels_validated"):
         raise ValueError("Pilot must validate all four CPU levels on this host")
+    if set(report.get("temperature_policies", ["abort"])) != {args.temperature_policy}:
+        raise ValueError("Batch temperature policy must match the validated pilot")
     if "memory" in args.load_types and not report.get("memory_four_levels_validated"):
         raise ValueError("Memory batch execution requires a validated four-level memory pilot")
 
@@ -158,6 +162,9 @@ def build_parser():
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--max-memory-gib", type=float, default=None)
+    parser.add_argument("--temperature-policy", choices=["abort", "record-only"], default="abort",
+                        help="abort: retain the configured temperature gate (default); record-only: explicitly disable "
+                             "script temperature aborts, retaining telemetry and all other guards. Does not change hardware protections.")
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--measurement-seconds", type=float, default=5)
     parser.add_argument("--timeout", type=int, default=300)
@@ -175,6 +182,9 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.temperature_policy == "record-only":
+        print("[warning] Temperature policy: record-only. Script temperature aborts are disabled; "
+              "completion is not proof of thermal safety or absence of throttling.", file=sys.stderr, flush=True)
     if args.warmup < 0 or not math_is_positive(args.context_seconds) or not math_is_positive(args.prometheus_query_timeout) or \
         not (math_is_positive(args.measurement_seconds) or args.measurement_seconds == 0) or args.timeout <= 0 or args.trial_timeout <= 0:
         parser.error("Invalid timing parameters")

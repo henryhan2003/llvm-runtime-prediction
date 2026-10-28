@@ -37,6 +37,7 @@ DEFAULTS = {
     "stabilization_timeout_seconds": 120, "stable_window_seconds": 10,
     "min_raw_scrapes": 5, "cpu_tolerance_pct": 8.0,
     "max_baseline_cpu_pct": 15.0, "max_temperature_celsius": 85.0,
+    "temperature_policy": "abort",
     "cleanup_timeout_seconds": 10, "stress_ng": "stress-ng",
 }
 
@@ -78,6 +79,8 @@ def read_config(path):
     if not (0 < config["cpu_tolerance_pct"] <= 10 and 0 <= config["max_baseline_cpu_pct"] <= 20 and
             50 <= config["max_temperature_celsius"] <= 90):
         raise ValueError("Unsafe CPU/temperature gate")
+    if config["temperature_policy"] not in {"abort", "record-only"}:
+        raise ValueError("temperature_policy must be abort or record-only")
     if config["load_type"] == "cpu" and (config["target_cpu_fraction"] <= 0 or config["memory_budget_fraction"] != 0):
         raise ValueError("CPU load requires a positive CPU target and no memory stress")
     if config["load_type"] == "memory" and (config["memory_budget_fraction"] <= 0 or config["target_cpu_fraction"] != 0):
@@ -177,9 +180,24 @@ def safety_snapshot():
         try:
             value = float(path.read_text()) / 1000
             if 0 < value < 150:
-                temperatures.append(value)
+                temperatures.append((value, path))
         except (OSError, ValueError):
             pass
+    hottest = max(temperatures, key=lambda item: item[0]) if temperatures else None
+    temperature_source = None
+    if hottest is not None:
+        path = hottest[1]
+        device_file = path.parent / ("type" if path.name == "temp" else "name")
+        label_file = path.with_name(path.name.removesuffix("_input") + "_label")
+        try:
+            device = device_file.read_text().strip()
+        except OSError:
+            device = path.parent.name
+        try:
+            label = label_file.read_text().strip() if path.name != "temp" else device
+        except OSError:
+            label = path.name
+        temperature_source = {"device": device, "label": label, "path": str(path)}
     frequencies = []
     for path in Path("/sys/devices/system/cpu").glob("cpu[0-9]*/cpufreq/scaling_cur_freq"):
         try:
@@ -187,7 +205,8 @@ def safety_snapshot():
         except (OSError, ValueError):
             pass
     return {"timestamp": time.time(), "memory_available_bytes": memory["MemAvailable"],
-            "temperature_max_celsius": max(temperatures) if temperatures else None,
+            "temperature_max_celsius": hottest[0] if hottest else None,
+            "temperature_max_source": temperature_source,
             "cpu_frequency_mean_mhz": statistics.mean(frequencies) if frequencies else None}
 
 
@@ -293,6 +312,16 @@ class LoadSession:
             time.sleep(min(.2, max(0, deadline - time.monotonic())))
         self.check()
 
+    def enforce_temperature_limit(self, sample):
+        if self.config["temperature_policy"] == "record-only":
+            return
+        temperature = sample["temperature_max_celsius"]
+        if temperature is not None and temperature >= self.config["max_temperature_celsius"]:
+            source = sample.get("temperature_max_source") or {}
+            raise RuntimeError(f"Safety abort: temperature cap reached ({temperature:.2f} C >= "
+                f"{self.config['max_temperature_celsius']:.2f} C; device={source.get('device', 'unknown')}, "
+                f"label={source.get('label', 'unknown')}, path={source.get('path', 'unavailable')})")
+
     def watchdog(self):
         while not self.stop_event.wait(1):
             try:
@@ -301,9 +330,7 @@ class LoadSession:
                     self.record["safety_samples"].append(sample)
                 if sample["memory_available_bytes"] < self.reserve:
                     raise RuntimeError("Safety abort: free memory fell below reserve")
-                temperature = sample["temperature_max_celsius"]
-                if temperature is not None and temperature >= self.config["max_temperature_celsius"]:
-                    raise RuntimeError("Safety abort: temperature cap reached")
+                self.enforce_temperature_limit(sample)
                 memory = memory_info()
                 initial = self.record["memory_before"]
                 if memory["SwapTotal"] - memory["SwapFree"] > initial["SwapTotal"] - initial["SwapFree"] + 64 * 1024 ** 2:
@@ -337,6 +364,10 @@ class LoadSession:
                 raise RuntimeError("Resource load experiments must execute on Linux")
             if not self.config["permission_confirmed"]:
                 raise RuntimeError("Explicit server-use permission confirmation is required, including IDLE trials")
+            if self.config["temperature_policy"] == "record-only":
+                print("[load] WARNING: temperature is recorded only; script temperature abort is disabled. "
+                      "Thermal safety and absence of throttling are NOT validated; system protections are unchanged.",
+                      file=sys.stderr, flush=True)
             import fcntl
             self.lock_fd = os.open(str(Path(tempfile.gettempdir()) / "llvm-v01-resource-load.lock"),
                 os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -363,8 +394,7 @@ class LoadSession:
             self.record["safety_samples"].append(initial_safety)
             if initial_safety["memory_available_bytes"] <= self.reserve:
                 raise RuntimeError("Insufficient free memory for safe benchmark headroom")
-            if initial_safety["temperature_max_celsius"] is not None and initial_safety["temperature_max_celsius"] >= self.config["max_temperature_celsius"]:
-                raise RuntimeError("Host is already above temperature cap")
+            self.enforce_temperature_limit(initial_safety)
             self.started = time.monotonic()
             self.record["load_started_at"] = time.time()
             self.record["memory_before"] = memory
