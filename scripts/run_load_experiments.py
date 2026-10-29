@@ -56,12 +56,15 @@ def workload_catalog(dataset, stage, selected):
 
 def command_for(args, program, size, info, config_path, results):
     common = ["--warmup", str(args.warmup), "--measurement-seconds", str(args.measurement_seconds),
-        "--min-measured-runs", "3", "--timeout", str(args.timeout), "--prometheus-exporter", "node",
+        "--min-measured-runs", str(args.min_measured_runs), "--timeout", str(args.timeout), "--prometheus-exporter", "node",
         "--prometheus-url", args.prometheus_url, "--prometheus-job", args.prometheus_job,
         "--prometheus-instance", args.prometheus_instance, "--prometheus-context-seconds", str(args.context_seconds),
         "--prometheus-query-step", "1", "--prometheus-query-delay", "2", "--results-dir", str(results),
         "--load-config", str(config_path)]
     if args.dataset == "polybench":
+        common += ["--max-measured-runs", str(args.max_measured_runs)]
+        if args.protocol == "fast-v2":
+            common += ["--preparation-cache-dir", str(results.parent.parent / "preparation_cache")]
         source_root = ROOT / "datasets/PolyBenchC-4.2.1"
         specific = ["--source-dir", str(source_root), "--dataset", "PolyBenchC-4.2.1",
             "--polybench-profile" if args.stage == "pilot" else "--polybench-size", size,
@@ -78,12 +81,28 @@ def command_for(args, program, size, info, config_path, results):
     return [args.python, str(ROOT / f"scripts/pipeline_rodinia{'_cuda' if args.dataset == 'cuda' else ''}.py"), *common, *specific]
 
 
+def apply_protocol_defaults(args):
+    defaults = {"measurement_seconds": 3 if args.protocol == "fast-v2" else 5,
+                "context_seconds": 6 if args.protocol == "fast-v2" else 12,
+                "min_measured_runs": 2 if args.protocol == "fast-v2" else 3,
+                "max_measured_runs": 10 if args.protocol == "fast-v2" else 0}
+    for name, value in defaults.items():
+        if getattr(args, name) is None:
+            setattr(args, name, value)
+    if args.protocol == "fast-v2" and args.dataset != "polybench":
+        raise ValueError("fast-v2 preparation reuse is currently validated for PolyBench CPU serial only")
+
+
 def create_manifest(args, root):
+    apply_protocol_defaults(args)
     profiles_path = ROOT / "configs/resource_load_profiles.json"
     definitions = json.loads(profiles_path.read_text(encoding="utf-8"))
     workload = workload_catalog(args.dataset, args.stage, args.program)
     safety = {**definitions["safety"], "permission_confirmed": args.permission_confirmed,
-              "temperature_policy": args.temperature_policy}
+              "temperature_policy": args.temperature_policy, "collection_protocol": args.protocol,
+              "minimum_measured_runs": args.min_measured_runs, "maximum_measured_runs": args.max_measured_runs}
+    if args.protocol == "fast-v2":
+        safety.update(stable_window_seconds=6, min_raw_scrapes=3)
     if args.max_memory_gib is not None:
         safety["max_memory_bytes"] = int(args.max_memory_gib * load.GIB)
     trials = []
@@ -110,7 +129,15 @@ def create_manifest(args, root):
                ROOT / "scripts/resource_load_memory_worker.py", ROOT / "scripts/resource_load_supervisor.py",
                ROOT / "scripts/pipeline_new.py", ROOT / "scripts/pipeline_rodinia.py", ROOT / "scripts/pipeline_rodinia_cuda.py",
                ROOT / "scripts/run_load_experiments.py", ROOT / "scripts/check_load_experiment.py"]
+    tracked.append(ROOT / "scripts/polybench_preparation_cache.py")
     return {"schema_version": 1, "stage": args.stage, "status": "PLANNED", "dataset": args.dataset,
+        "collection_protocol": args.protocol,
+        "measurement_policy": {"minimum_runs": args.min_measured_runs, "maximum_runs": args.max_measured_runs,
+            "budget_seconds": args.measurement_seconds, "context_seconds": args.context_seconds,
+            "short_during_missing_permitted": args.protocol == "fast-v2"},
+        "preparation_cache": {"enabled": args.protocol == "fast-v2", "directory": str(root / "preparation_cache"),
+            "expected_unique_preparations": len(workload) if args.protocol == "fast-v2" else 0,
+            "timings_and_load_observations_cached": False},
         "created_at_utc": datetime.now(timezone.utc).isoformat(), "execution_host": socket.gethostname() if args.execute else None,
         "trials": trials, "load_families": args.load_types, "prediction_features_changed": False,
         "scripts_and_config_sha256": {str(p): file_digest(p) for p in tracked},
@@ -129,6 +156,8 @@ def check_batch_gate(args):
         raise ValueError("Pilot must validate all four CPU levels on this host")
     if set(report.get("temperature_policies", ["abort"])) != {args.temperature_policy}:
         raise ValueError("Batch temperature policy must match the validated pilot")
+    if set(report.get("collection_protocols", ["strict-v1"])) != {args.protocol}:
+        raise ValueError("Batch protocol must match a pilot validated with that protocol; do not reuse a strict-v1 pilot for fast-v2")
     if "memory" in args.load_types and not report.get("memory_four_levels_validated"):
         raise ValueError("Memory batch execution requires a validated four-level memory pilot")
 
@@ -153,6 +182,8 @@ def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", choices=["polybench", "openmp", "cuda"], default="polybench")
     parser.add_argument("--stage", choices=["pilot", "batch"], default="pilot")
+    parser.add_argument("--protocol", choices=["strict-v1", "fast-v2"], default="strict-v1",
+                        help="fast-v2: PolyBench preparation cache, 2-10 measured runs, shorter monitored contexts; short during metrics may be missing")
     parser.add_argument("--program", action="append", default=[])
     parser.add_argument("--load-types", nargs="+", choices=["cpu", "memory"], default=["cpu"])
     parser.add_argument("--execute", action="store_true", help="Actually run Linux benchmarks and pressure; default is plan-only")
@@ -166,10 +197,12 @@ def build_parser():
                         help="abort: retain the configured temperature gate (default); record-only: explicitly disable "
                              "script temperature aborts, retaining telemetry and all other guards. Does not change hardware protections.")
     parser.add_argument("--warmup", type=int, default=1)
-    parser.add_argument("--measurement-seconds", type=float, default=5)
+    parser.add_argument("--measurement-seconds", type=float, default=None)
+    parser.add_argument("--min-measured-runs", type=int, default=None)
+    parser.add_argument("--max-measured-runs", type=int, default=None)
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--trial-timeout", type=int, default=1800)
-    parser.add_argument("--context-seconds", type=float, default=12)
+    parser.add_argument("--context-seconds", type=float, default=None)
     parser.add_argument("--prometheus-url", default="http://127.0.0.1:9090")
     parser.add_argument("--prometheus-job", default="node")
     parser.add_argument("--prometheus-instance", default="127.0.0.1:9100")
@@ -182,6 +215,15 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    try:
+        apply_protocol_defaults(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+    minimum = 2 if args.protocol == "fast-v2" else 3
+    if args.min_measured_runs < minimum or args.max_measured_runs < 0 or (args.max_measured_runs and args.max_measured_runs < args.min_measured_runs):
+        parser.error("Invalid repetition limits for the selected protocol")
+    if args.protocol == "fast-v2" and not args.max_measured_runs:
+        parser.error("fast-v2 requires a positive --max-measured-runs")
     if args.temperature_policy == "record-only":
         print("[warning] Temperature policy: record-only. Script temperature aborts are disabled; "
               "completion is not proof of thermal safety or absence of throttling.", file=sys.stderr, flush=True)
@@ -226,6 +268,8 @@ def main(argv=None):
         previous_handlers[signum] = signal.getsignal(signum)
         signal.signal(signum, interrupted)
     try:
+        manifest["status"] = "RUNNING"
+        load.write_json(path, manifest)
         # Read-only early check; each trial also verifies freshness, capacity, and safe baseline.
         load.monitoring_preflight(args)
         for trial in manifest["trials"]:
@@ -242,6 +286,8 @@ def main(argv=None):
             load.write_json(path, manifest)
             if code:
                 raise RuntimeError(f"Trial failed; partial results and sidecars retained: {trial['directory']}")
+        manifest["status"] = "VALIDATING"
+        load.write_json(path, manifest)
         import check_load_experiment
         report = check_load_experiment.validate(path)
         manifest["status"] = report["status"]

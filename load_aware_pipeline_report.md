@@ -1,12 +1,12 @@
 # 资源负载感知 Pipeline 扩展报告
 
-日期：2026-10-28。
+初稿日期：2026-10-28；最新修订：2026-10-29。
 
 ## 1. 交付状态和本轮边界
 
 已实现三条现有 Pipeline 的可选 CPU/内存后台负载功能、独立实验记录、无压力自检、试验计划和结果验证器。没有重新设计监控系统，没有新建 Prometheus 指标，没有增加主 CSV 列，没有训练预测模型。
 
-按照本轮随后确认的要求“先完成代码与测试，实测由我在服务器执行”，本机只做代码检查、已有数据审计、模拟单元测试和计划生成。原交付状态为 PENDING_SERVER_PILOT。用户随后在服务器开展了部分试运行，见第 8 节补充记录；**完整试运行尚未通过，不能把模拟测试、旧无负载结果或安全中止的记录称为合格的新负载性能结果。**
+按照本轮随后确认的要求“先完成代码与测试，实测由我在服务器执行”，本机只做代码检查、已有数据审计、模拟单元测试和计划生成。原交付状态为 PENDING_SERVER_PILOT。用户随后完成的 strict-v1 CPU pilot 已通过 24/24 配置校验并下载复核，见第 8.3～8.4 节；最新 fast-v2 优化已完成本机测试、尚待服务器新协议试运行，见第 8.5 节。不能把模拟测试、旧无负载结果或安全中止的记录称为合格的新负载性能结果。
 
 ## 2. 原有 Pipeline 与数据审计
 
@@ -136,7 +136,7 @@ PolyBench 没有 session_id 列，运行明细已有唯一 run_id；使用“独
 
 ## 8. 本机验证结果与待验收项
 
-`python scripts/check_load_aware_pipeline.py`：95 项测试，94 项通过，1 项 Linux/POSIX 原生 probe 测试在 Windows 跳过，0 失败。包含原有 58 项与新增 37 项。`unit_test_report.json` 还对 Git 基线中的静态 extract/generate/infer 函数与字段声明做语法树比较，结果 PASS。模拟 CPU 生命周期并没有启动真实 stress-ng。
+`python scripts/check_load_aware_pipeline.py`：123 项测试，122 项通过，1 项 Linux/POSIX 原生 probe 测试在 Windows 跳过，0 失败。包含原有 58 项、负载扩展与修复的 40 项，以及 fast-v2 的 25 项。`unit_test_report.json` 还对 Git 基线中的静态 extract/generate/infer 函数与字段声明做 43 项语法树比较，结果 PASS。模拟 CPU 生命周期并没有启动真实 stress-ng。
 
 已生成 24 个 CPU 试运行 trial 的计划：GEMM（较高算术密度）和 Jacobi-2D（邻域更新、访存与重用特征不同），各 MINI/MEDIUM/EXTRALARGE，乘四档 CPU。压力级别顺序按配置轮换/反转，避免永远先 IDLE 后 HIGH。可选择独立的 memory 家族，仍不把 CPU 和内存压力同时施加在一条 trial 上。
 
@@ -161,6 +161,102 @@ PolyBench 没有 session_id 列，运行明细已有唯一 run_id；使用“独
 用户此次提供的是压力停止后的温度快照：k10temp 的 Tdie/Tctl 43.12℃、CCD 最高 48℃，两个 NVMe Composite 分别 61.85℃和 59.85℃。它不能定位此前 85.5℃测点，也不能证明持续运行安全。AMD 的 [3970X 官方规格](https://www.amd.com/en/support/downloads/drivers.html/processors/ryzen-threadripper/ryzen-threadripper-3000-series/amd-ryzen-threadripper-3970x.html)列出 Tjmax 95℃；该数值不是推荐长期运行温度，不能套用到 NVMe，也不用于自动调高本工具阈值。测点含义参考 [Linux k10temp 文档](https://kernel.org/doc/html/v5.10/hwmon/k10temp.html)。
 
 旧目录和旧 manifest 不重写、不续跑，也不与新策略结果自动拼接。旧 sidecar 缺少策略键时按历史 `abort` 解释；旧 manifest 的代码哈希发生变化仍应报告，不抹掉版本差异。本轮只做本机测试和计划验证，没有执行服务器压力或重新采集时间。
+
+### 8.3 2026-10-29 最终校验的全局状态误判修复
+
+用户提供的 `/data_disk/hanli/load_cpu_pilot_record_only_20261028_173747/validation_report.json` 显示，24/24 配置已通过逐项校验，`cpu_four_levels_validated=True`，温度策略均为 `record-only`，唯一错误为 `Plan-only manifest contains no real load experiment results`。这不是温度、缺样或时间标签错误；`memory_four_levels_validated=False` 也不是本次 CPU-only 试验的失败条件。
+
+根因是启动器只更新每条 trial 的状态，遗漏了顶层 manifest 状态的更新：顶层保持 `PLANNED` 直到首次最终校验，验证器因此追加了计划模式错误；启动器随后把这一错误的最终结果 `FAIL` 写回顶层。修复仅在执行路径增加两次持久化：进入实际执行阶段标记 `RUNNING`，所有 trial 完成、独立校验之前标记 `VALIDATING`，之后仍按验证结果写 `PASS/FAIL`。纯计划模式保持 `PLANNED`；真实运行失败仍中止并保留 `FAIL`。不改动任何采集逻辑、验收阈值或源 CSV，不删除验证器的 plan-only 检查。
+
+已有这批数据不需要重采。应在服务器更新代码前先备份首次失败报告，然后使用原验证器重新检查原 `experiment_manifest.json`。顶层已由原启动器保存为 `FAIL`，不会再触发 `PLANNED` 判断；所有配置、CSV 哈希、时间中位数、阶段、清理与 CPU 控制检查仍完整重做。重新校验只重写派生校验报告和分析比较表，不更改原 manifest、配置、sidecar 或 CSV，也不启动压力或目标程序。不要手动改为 PASS 或删改原源码哈希。如果更新了实验时跟踪的源码，版本差异仍必须如实报错，不能为了重验而替换历史哈希。
+
+新增回归测试覆盖：模拟完整 24-trial 启动器生命周期和最终校验入口的全局状态；真实 trial 非零退出时保持失败且不进入最终校验；使用一致性完整的合成 fixture 复现旧状态误判，并验证独立重验可以恢复 PASS 且原始观测、sidecar、配置及 manifest 字节不变。测试不连接服务器，不产生真实负载；本机没有下载这次完整原始数据，真实重验结果仍待用户在服务器执行确认。
+
+```bash
+PILOT_ROOT="/data_disk/hanli/load_cpu_pilot_record_only_20261028_173747"
+cp -n "$PILOT_ROOT/validation_report.json" "$PILOT_ROOT/validation_report.initial_fail.json"
+python scripts/check_load_experiment.py "$PILOT_ROOT/experiment_manifest.json"
+```
+
+### 8.4 2026-10-29 下载后离线分析
+
+已读取 `load_pilot_download/load_cpu_pilot_record_only_20261028_173747`。本次包含 24 个配置，合计 33,483 条运行记录，其中正式测量 33,459 条、预热 24 条，整体执行跨度约 30.29 分钟。这仍然是 24 个程序/规模/背景负载组合，不是 33,459 个独立输入配置。
+
+独立分析脚本 `scripts/analyze_load_pilot_results.py` 不导入或运行任何 Pipeline。533 项离线检查全部通过，包括每配置原始配置哈希、结果 CSV 和明细 CSV 哈希、run_id、重新计算的中位数/均值/CV、阶段边界和真实抓取计数、CPU 控制目标及进程清理。相同程序和输入规模在四档压力下，静态字段（不含产物路径）一致，可执行文件 SHA-256 一致；记录的硬件、编译器和计时参数一致。分析前后全部 310 个源文件的 SHA-256 不变。下载目录没有历史服务器源码快照，因此不以当前本机 checkout 冒充历史源码哈希复核。原 manifest 中保留的 FAIL 是上一节的状态误判历史，服务器独立重验报告为 PASS，本次均不改写。
+
+**负载控制：** IDLE/LOW/MEDIUM/HIGH 的运行前 CPU 均值分别为 0.12%、25.11%、49.73%、75.19%；同档跨六个程序/规模组合的范围分别为 0.10%～0.13%、25.00%～25.25%、49.69%～49.80%、75.16%～75.22%。这些是 Prometheus 实测，不是把配置值写回结果。before/during/after 的每阶段最少独立原始抓取数分别为 12、5、12。阶段仍对应一组重复调用，而不是对每次亚毫秒调用各自独立采样。
+
+下表为相对于相同程序和规模 IDLE 中位时间的变化，负值表示变快，正值表示变慢。没有删除与预期方向不一致的观测。
+
+| 程序 | 输入规模 | IDLE 中位时间/s | LOW 时间变化 | MEDIUM 时间变化 | HIGH 时间变化 |
+| --- | --- | --- | --- | --- | --- |
+| GEMM | MINI | 0.000664 | -37.8% | -42.6% | -40.0% |
+| GEMM | MEDIUM | 0.010314 | -38.8% | -19.1% | -7.6% |
+| GEMM | EXTRALARGE | 7.016530 | +21.7% | +39.8% | +53.7% |
+| Jacobi-2D | MINI | 0.000703 | -38.1% | -45.3% | -39.9% |
+| Jacobi-2D | MEDIUM | 0.014878 | -19.0% | -16.8% | -3.6% |
+| Jacobi-2D | EXTRALARGE | 14.797108 | +6.6% | +19.4% | +29.7% |
+
+**频率解释的证据与边界：** 四档运行前主机平均频率约为 2228、3735、3367、4048 MHz，运行中分别约为 2258、3573、3469、4036 MHz。这说明加压时系统频率状态也发生变化，与小任务升频后更快的解释相符，但不能证明因果关系。这里是约 1 Hz 读取各逻辑 CPU 的 `scaling_cur_freq` 后取未加权平均，并非目标任务运行核心的实际频率，也不是任务执行期间按活跃时间加权的频率；中档低于低档还提示不要将这些平均读数简单解释为随负载单调变化。Linux CPUFreq 文档明确说明该接口不一定反映瞬时真实硬件频率。没有采集目标核心位置、迁移、C-state 驻留时间或硬件性能计数器，不能把所有时间变化归因于频率。
+
+当前计时还包含 fork/exec、动态加载及退出采集回调，不是只计算法 kernel。MINI 约 0.38～0.70 ms，启动和系统状态的影响不能忽略。EXTRALARGE 的进程 CPU 时间/墙钟时间中位比约 0.999～1.000，暗示变慢并非主要表现为未获调度而等待；但仍不能区分 SMT、缓存、访存和频率等机制。相同主机 CPU 百分比不等于相同的目标核心竞争强度，本次也只覆盖全逻辑 CPU 上的 `stress-ng sqrt` 计算压力，不代表所有后台负载类型。
+
+**重复性：** MINI 各组有 2773～4300 次测量，组内 CV 为 11.6%～25.0%；MEDIUM 有 319～573 次，组内 CV 为 4.7%～27.5%。EXTRALARGE 每组只有 3 次测量，GEMM CV 为 1.15%～6.18%，Jacobi-2D 为 0.31%～0.77%。每个程序/规模/负载只有一轮独立建立的背景状态，组内大量重复不能代替跨轮重复，也不能据此给出显著性或可靠的跨轮方差。
+
+**温度：** 本批最高观测 85.25℃，发生于 Jacobi-2D EXTRALARGE/HIGH 的 during 阶段，最高测点为 `k10temp/Tccd5`，对应一次不低于 85℃的安全采样。不是 NVMe 测点，也不等于整颗 CPU 的统一温度。在 `record-only` 策略下没有因此中断。当前约 1 Hz 的主机频率均值不能证明没有热降频，采集 PASS 也不证明散热安全。
+
+**结论：** 负载施加、现有三阶段监控及结果关联已跑通，本批数据可保留为有效 pilot，不应为了获得单调变慢而删除小规模观测。正式扩充前，应明确研究自然调频系统中的运行时间，还是单独识别资源竞争效应；前者需要正确使用运行前状态并保留频率/放置条件的限制，后者需要经许可控制或分层分析这些因素。建议先少量交替复测独立负载轮次，再扩到三个数据集、20 档，避免将当前一次 pilot 当作已充分验证的通用负载模型。本轮没有修改 Pipeline、系统设置、原始 CSV、模型或 folds，没有启动真实负载。
+
+交付：`outputs/load_cpu_pilot_analysis_20261028_173747_verified/pilot_analysis_report.md`、`trial_analysis.csv`、`analysis_audit.json`。新增离线分析的 5 项单元测试全部通过。复现时使用新的输出目录：
+
+```powershell
+python scripts/analyze_load_pilot_results.py --input-dir load_pilot_download/load_cpu_pilot_record_only_20261028_173747 --output-dir outputs/load_cpu_pilot_analysis_reproduced
+python -m unittest tests.test_analyze_load_pilot_results -v
+```
+
+### 8.5 2026-10-29 fast-v2：复用准备工作与限制测量次数
+
+本轮先优化当前计划中的 PolyBench/C CPU serial，不把通用缓存未经审查地套用到 Rodinia Makefile 或 CUDA host/device 编译。`--protocol strict-v1` 仍是启动器默认值；显式选择 `--protocol fast-v2` 才启用新策略，OpenMP/CUDA 选择 fast-v2 会明确拒绝。三套原始 CSV 和现有建模结果均未修改。
+
+| 项目 | 原 strict-v1 | 新 fast-v2 默认 |
+| --- | --- | --- |
+| AST/CFG/IR 与可执行文件 | 每条负载 trial 重复准备 | 每个程序/输入配置准备一次，四档压力共享 |
+| 正式测量 | 5 秒预算，至少 3 次，无次数上限 | 3 秒预算，至少 2 次，最多 10 次；达到预算且满足最少次数，或触及次数上限即停止 |
+| 预热 | 1 次 | 保留 1 次，仍在背景负载下执行 |
+| before / after | 各 12 秒 | 各 6 秒 |
+| 稳定窗口 | 10 秒 | 6 秒，仍须连续 3 次检查通过 |
+| 独立抓取最低数量 | 每阶段至少 5 个 | before/after 及可观测 during 至少 3 个 |
+| 极短 during 的处理 | 不足采样即失败 | 仅允许明确分类的短窗口缺失，不填零，不用空等或额外执行凑采样 |
+
+没有额外规定一个“长程序名单”。例如一次执行 10 秒时，正式测量完成 2 次即超过 3 秒预算并停止；一次执行 1 ms 时，最多执行 10 次，不会继续重复到几千次。中等耗时按相同预算与上限自然落在 2～10 次之间。`runtime_sec_median` 仍由成功测量调用的原始时间计算；只有 2 次时，中位数就是两个时间的算术平均，抗异常和置信度会下降，不能当成与旧版大量重复具有相同精度。预热、启动/稳定等待和清理继续不计入单次 runtime。
+
+**准备缓存：** 新模块 `scripts/polybench_preparation_cache.py` 只接收准备阶段的 AST/CFG/IR 特征和产物路径，不允许保存 runtime、run_success、进程资源或监控观测。缓存键包括程序身份、规模宏、项目源码/头文件、PolyBench utilities、兼容头文件、优化等级、工具路径/版本/文件状态、相关环境变量与提取代码哈希。缓存局限于单次实验目录 `preparation_cache/`，使用固定的系统头文件/链接库环境；不支持携带任意自定义编译参数复用缓存。系统库更新不属于本轮受控实验，应停止并创建新实验批次，而不是继续沿用缓存。
+
+首次准备在后台负载启动之前完成，成功后发布收据和产物哈希；失败或不完整产物不发布。命中时验证收据和全部产物哈希，损坏即明确失败，不静默重建。每条 trial 的 sidecar 保存缓存 key、收据路径/哈希、可执行文件哈希及命中情况。运行时间和动态资源每条 trial 都重新测量。AST/IR/CFG/可执行文件只保留一份共享副本，不复制到四个 trial 目录，也不把缓存参数加入主 CSV 或预测白名单。保存/下载结果时要保留整批目录中的 `preparation_cache/`，不能只复制单个 trial 文件夹。
+
+对 30 程序×20 规模×4 CPU 压力，计划仍为 2400 条样本，但只有 600 份准备产物，预期 1800 次缓存命中。服务器最终验证还检查同一程序/输入在不同负载条件下使用相同缓存 key，避免中途改源码后把不同程序产物当作同一控制条件。
+
+**短窗口的语义边界：** CPU 与内存的实际 scrape interval 仍从 Prometheus 读取，不能通过减小 query step 冒充更多独立抓取。默认按服务器现有 1 秒间隔设计；若间隔更长而 context 不足，仍拒绝运行，需显式增大窗口。只在 fast-v2、仅 during 阶段、真实窗口短于 `(min_raw_scrapes+1)×interval` 且确实不足独立抓取时，sidecar 可记录 `MISSING_SHORT_WINDOW`。对应原 CSV 的 during 数值保持空，`prometheus_during_collection_success=False`、`prometheus_three_phase_collection_success=False`。before/after、控制目标、进程资源采集和清理仍严格检查；网络请求失败、断连、长窗口缺样不属于这个例外，仍然失败。
+
+新协议的 trial 可以在这一预先声明的缺失规则下通过，但不叫“三阶段全部采齐”。最终报告明确输出 `complete_three_phase_configurations` 与 `short_during_missing_configurations`，并记录 `collection_protocols`、缓存命中/准备份数。新旧协议不静默混合；fast-v2 全量执行必须先提供同机、同温度策略、同为 fast-v2 的通过报告，不能拿旧 strict-v1 pilot 绕过验收。
+
+后续审计或建模不能照搬“三阶段全成功才保留样本”的旧筛选规则，否则会系统性剔除 fast-v2 的短任务。应区分运行成功、运行前状态可用和运行中辅助信息缺失，并按协议审查；本轮没有擅自修改任何模型训练脚本或特征白名单。
+
+**耗时预期：** 1 秒抓取间隔且首次稳定就达标时，恢复等待约从 12 秒变为 8 秒，稳定过程的名义初始等待及检查约从 16 秒变为 12 秒，before/after 从合计 24 秒变为 12 秒。每配置名义固定等待约省 20 秒，2400 组对应约 13.3 小时；这不是实测承诺，还不含缓存省下的准备时间和减少重复调用的收益，亦不能用来扣掉真实超时、重新稳定或安全中止。整体运行仍可能是一天以上，必须以新协议 pilot 的实测重新估计，不承诺几个小时完成。
+
+**验证与交付：** 123 项管线/负载测试中 122 项通过、1 项 Windows 下跳过，43 项原静态函数与 CSV 字段声明比较通过；另有 6 项离线分析测试通过。已生成不执行负载的 24-trial 新协议 pilot 计划及 2400-trial 全量计划，检查其准备份数分别为 6 和 600。旧 24 组数据重新离线核验仍通过，310 个原文件未变。新增测试覆盖缓存命中与失效、腐坏/失败不误用、不缓存运行观测、测量上下限、短窗口不填零不凑时长、真正监控故障不豁免、两次中位数、旧模式兼容、原全局状态流转修复。尚未在 Linux 实测 fast-v2，不启动任何服务器压力或模型训练。
+
+主要文件：`scripts/pipeline_new.py`、`scripts/resource_load.py`、`scripts/run_load_experiments.py`、`scripts/check_load_experiment.py`、`scripts/check_load_aware_pipeline.py`、新缓存模块和 `tests/test_load_fast_protocol.py`。离线分析器及其测试也已适配共享产物路径和新协议的明确缺失状态。`configs/resource_load_profiles.json` 未改默认值，快速参数由显式新协议写入每批独立配置。
+
+同步后在 tmux 中手动激活环境并设置 stress-ng 的 PATH，再运行新协议 pilot：
+
+```bash
+python scripts/check_load_aware_pipeline.py
+python scripts/run_load_experiments.py --dataset polybench --stage pilot \
+  --protocol fast-v2 --load-types cpu --temperature-policy record-only \
+  --execute --permission-confirmed \
+  --output-dir "/data_disk/hanli/load_cpu_pilot_fast_v2_$(date +%Y%m%d_%H%M%S)"
+```
 
 ## 9. 服务器执行指令
 

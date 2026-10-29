@@ -30,8 +30,10 @@ from urllib.request import Request, urlopen
 
 try:
     import resource_load
+    import polybench_preparation_cache as preparation_cache
 except ImportError:
     from scripts import resource_load
+    from scripts import polybench_preparation_cache as preparation_cache
 
 try:
     import cpu_runtime_parameters as cpu_runtime
@@ -2556,6 +2558,7 @@ def run_program(
     min_measured_runs: int,
     prometheus_context_seconds: float,
     load_guard=None,
+    max_measured_runs: int = 0,
 ) -> tuple[
     list[dict[str, object]],
     dict[str, object],
@@ -2619,6 +2622,8 @@ def run_program(
     measured_run_count = 0
     while True:
         elapsed_window = time.perf_counter() - measurement_start
+        if max_measured_runs and measured_run_count >= max_measured_runs:
+            break
         if measurement_seconds > 0:
             if (
                 measured_run_count >= min_measured_runs
@@ -2731,6 +2736,7 @@ def environment_manifest(
         "warmup_runs": args.warmup,
         "measurement_seconds": args.measurement_seconds,
         "min_measured_runs": args.min_measured_runs,
+        "max_measured_runs": getattr(args, "max_measured_runs", 0),
         "fixed_measured_runs": args.runs,
         "timeout_sec": args.timeout,
         "polybench_profiles": (
@@ -2748,29 +2754,9 @@ def environment_manifest(
     }
 
 
-def process_program(
-    program: Program,
-    args: argparse.Namespace,
-    static_environment: dict[str, object] | None = None,
-) -> tuple[
-    dict[str, object],
-    list[dict[str, object]],
-    dict[str, object],
-    dict[str, tuple[float, float]] | None,
-]:
-    error_messages: list[str] = []
+def prepare_program(program: Program, args: argparse.Namespace) -> dict[str, object]:
+    error_messages = []
     extra_flags = program_extra_flags(program, args.extra_flag or [])
-    input_id = program.input_profile or args.input_id
-    representation_compiler = compiler_for(program, args.c_compiler, args.cxx_compiler)
-    runtime_compiler = compiler_for(program, args.run_c_compiler, args.run_cxx_compiler)
-    environment = {
-        **(static_environment or collect_static_environment()),
-        "representation_compiler": representation_compiler,
-        "representation_compiler_version": compiler_version(representation_compiler),
-        "runtime_compiler": runtime_compiler,
-        "runtime_compiler_version": compiler_version(runtime_compiler),
-        "opt_version": llvm_opt_version(),
-    }
     ast_path, ast_success, ast_error = generate_ast(program, args.c_compiler, args.cxx_compiler, extra_flags)
     if ast_error and not ast_success:
         error_messages.append(f"AST: {ast_error[:300]}")
@@ -2798,6 +2784,41 @@ def process_program(
     if not build_success:
         PIPELINE_STAGE_ERRORS.labels(dataset=args.dataset, stage="build").inc()
 
+    return {"ast_path": ast_path, "ir_path": ir_path, "cfg_path": cfg_path, "exe_path": exe_path,
+            "ast_success": ast_success, "ir_success": ir_success, "cfg_success": cfg_success,
+            "build_success": build_success, "cfg_kind": cfg_kind, "errors": error_messages,
+            "ast_features": ast_features, "ir_features": ir_features, "cfg_features": cfg_features}
+
+
+def process_program(
+    program: Program,
+    args: argparse.Namespace,
+    static_environment: dict[str, object] | None = None,
+) -> tuple[
+    dict[str, object],
+    list[dict[str, object]],
+    dict[str, object],
+    dict[str, tuple[float, float]] | None,
+]:
+    extra_flags = program_extra_flags(program, args.extra_flag or [])
+    input_id = program.input_profile or args.input_id
+    representation_compiler = compiler_for(program, args.c_compiler, args.cxx_compiler)
+    runtime_compiler = compiler_for(program, args.run_c_compiler, args.run_cxx_compiler)
+    environment = {
+        **(static_environment or collect_static_environment()),
+        "representation_compiler": representation_compiler,
+        "representation_compiler_version": compiler_version(representation_compiler),
+        "runtime_compiler": runtime_compiler,
+        "runtime_compiler_version": compiler_version(runtime_compiler),
+        "opt_version": llvm_opt_version(),
+    }
+    prepared = preparation_cache.get_or_prepare(sys.modules[__name__], program, args, lambda: prepare_program(program, args))
+    ast_path, ir_path, cfg_path, exe_path = (prepared[name] for name in ["ast_path", "ir_path", "cfg_path", "exe_path"])
+    ast_success, ir_success, cfg_success, build_success = (prepared[name] for name in ["ast_success", "ir_success", "cfg_success", "build_success"])
+    ast_features, ir_features, cfg_features = (prepared[name] for name in ["ast_features", "ir_features", "cfg_features"])
+    cfg_kind = prepared["cfg_kind"]
+    error_messages = list(prepared["errors"])
+
     run_records: list[dict[str, object]] = []
     runtime_summary = summarize([])
     measurement_summary = summarize_process_records(
@@ -2824,6 +2845,7 @@ def process_program(
                 args.min_measured_runs,
                 args.prometheus_context_seconds if args.prometheus_exporter != "off" else 0.0,
                 load_guard,
+                getattr(args, "max_measured_runs", 0),
             )
         measurement_summary = {
             field: runtime_summary.get(field, "")
@@ -2896,6 +2918,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate AST/CFG/LLVM IR and collect runtime prediction features.")
     resource_load.add_arguments(parser)
     parser.add_argument("--results-dir", type=Path, default=None, help="Optional isolated output directory; required for load experiments.")
+    parser.add_argument("--preparation-cache-dir", type=Path, default=None, help="Opt-in verified shared static/build cache; never caches runtime observations.")
+    parser.add_argument("--max-measured-runs", type=int, default=0, help="Optional repetition cap; 0 preserves the original uncapped time-budget policy.")
     parser.add_argument("--source-dir", default=str(DEFAULT_SOURCE_DIR), help="Directory containing source files.")
     parser.add_argument("--dataset", default="test", help="Dataset label written to CSV.")
     parser.add_argument("--task-type", default="mixed_test", help="Task type label written to CSV.")
@@ -3012,6 +3036,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--warmup must be >= 0")
     if args.runs < 1 or args.min_measured_runs < 1:
         parser.error("--runs and --min-measured-runs must be >= 1")
+    if args.max_measured_runs < 0 or (args.max_measured_runs and args.max_measured_runs < args.min_measured_runs):
+        parser.error("--max-measured-runs must be 0 or at least --min-measured-runs")
     if args.measurement_seconds < 0:
         parser.error("--measurement-seconds must be >= 0")
     if args.timeout <= 0:

@@ -384,6 +384,57 @@ class PipelineIntegrationTests(Fixture):
 
 
 class PlanningTests(Fixture):
+    def test_execute_updates_global_state_before_trials_and_validation_without_real_load(self):
+        root = self.root / "execution"
+        path = root / "experiment_manifest.json"
+        observed = []
+        def run_trial(trial, timeout):
+            manifest = json.loads(path.read_text())
+            self.assertEqual("RUNNING", manifest["status"])
+            current = next(t for t in manifest["trials"] if t["trial_id"] == trial["trial_id"])
+            self.assertEqual("RUNNING", current["status"])
+            observed.append(trial["trial_id"])
+            return 0
+        def validate(manifest_path):
+            manifest = json.loads(Path(manifest_path).read_text())
+            self.assertEqual("VALIDATING", manifest["status"])
+            self.assertEqual(24, len(manifest["trials"]))
+            self.assertTrue(all(t["status"] == "COMPLETED" and t["exit_code"] == 0 for t in manifest["trials"]))
+            return {"status": "PASS"}
+        with mock.patch.object(runner.platform, "system", return_value="Linux"), \
+             mock.patch.object(load, "monitoring_preflight"), \
+             mock.patch.object(runner.shutil, "disk_usage", return_value=types.SimpleNamespace(free=10 * load.GIB)), \
+             mock.patch.object(runner, "run_trial", side_effect=run_trial), \
+             mock.patch.object(checker, "validate", side_effect=validate), \
+             mock.patch.object(runner.signal, "SIGHUP", 1, create=True), \
+             mock.patch.object(runner.signal, "getsignal"), mock.patch.object(runner.signal, "signal"), \
+             mock.patch.object(runner.subprocess, "Popen") as spawn:
+            code = runner.main(["--execute", "--permission-confirmed", "--output-dir", str(root)])
+        spawn.assert_not_called()
+        self.assertEqual(0, code)
+        self.assertEqual(24, len(observed))
+        self.assertEqual("PASS", json.loads(path.read_text())["status"])
+
+    def test_failed_trial_preserves_fail_state_and_never_reaches_validation(self):
+        root = self.root / "failed-execution"
+        with mock.patch.object(runner.platform, "system", return_value="Linux"), \
+             mock.patch.object(load, "monitoring_preflight"), \
+             mock.patch.object(runner.shutil, "disk_usage", return_value=types.SimpleNamespace(free=10 * load.GIB)), \
+             mock.patch.object(runner, "run_trial", return_value=1) as run, \
+             mock.patch.object(checker, "validate") as validate, \
+             mock.patch.object(runner.signal, "SIGHUP", 1, create=True), \
+             mock.patch.object(runner.signal, "getsignal"), mock.patch.object(runner.signal, "signal"), \
+             mock.patch.object(runner.subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(RuntimeError, "Trial failed"):
+                runner.main(["--execute", "--permission-confirmed", "--output-dir", str(root)])
+        spawn.assert_not_called()
+        validate.assert_not_called()
+        run.assert_called_once()
+        manifest = json.loads((root / "experiment_manifest.json").read_text())
+        self.assertEqual("FAIL", manifest["status"])
+        self.assertEqual("FAIL", manifest["trials"][0]["status"])
+        self.assertTrue(all(t["status"] == "PLANNED" for t in manifest["trials"][1:]))
+
     def test_interrupted_trial_terminates_only_its_pipeline_group(self):
         process = mock.Mock(pid=765432)
         process.wait.side_effect = [KeyboardInterrupt(), 0]
@@ -508,9 +559,34 @@ class ResultValidationTests(Fixture):
         self.assertEqual(2., validated["runtime_sec_median"])
         self.assertEqual(25., validated["host_cpu_usage_pct_before_mean"])
 
+    def test_revalidate_historical_state_only_failure_without_changing_observations(self):
+        trial, record, sidecar = self.make_trial()
+        manifest_path = self.root / "manifest.json"
+        manifest = {"status": "PLANNED", "stage": "batch", "dataset": "polybench",
+                    "trials": [trial], "load_families": ["cpu"]}
+        tracked = [sidecar, Path(trial["config_path"]),
+                   Path(record["outputs"]["summary_file"]), Path(record["outputs"]["runs_file"])]
+        hashes = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in tracked}
+        load.write_json(manifest_path, manifest)
+        first_report = checker.validate(manifest_path)
+        self.assertEqual(["Plan-only manifest contains no real load experiment results"], first_report["errors"])
+        self.assertEqual(1, first_report["validated_configurations"])
+        # The historical launcher persisted FAIL after its first final validation.
+        manifest["status"] = first_report["status"]
+        load.write_json(manifest_path, manifest)
+        before = manifest_path.read_bytes()
+        with mock.patch.object(load.subprocess, "Popen") as spawn:
+            report = checker.validate(manifest_path)
+        spawn.assert_not_called()
+        self.assertEqual("PASS", report["status"])
+        self.assertEqual([], report["errors"])
+        self.assertEqual(before, manifest_path.read_bytes())
+        self.assertEqual(hashes, {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in tracked})
+
     def test_validator_accepts_legacy_sidecar_without_explicit_temperature_policy(self):
         trial, record, sidecar = self.make_trial()
-        record["config"].pop("temperature_policy")
+        for key in ["temperature_policy", "collection_protocol", "minimum_measured_runs", "maximum_measured_runs"]:
+            record["config"].pop(key)
         load.write_json(sidecar, record)
         validated = checker.validate_trial(trial)
         self.assertEqual("abort", validated["temperature_policy"])

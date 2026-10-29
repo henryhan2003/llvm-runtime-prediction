@@ -38,6 +38,7 @@ DEFAULTS = {
     "min_raw_scrapes": 5, "cpu_tolerance_pct": 8.0,
     "max_baseline_cpu_pct": 15.0, "max_temperature_celsius": 85.0,
     "temperature_policy": "abort",
+    "collection_protocol": "strict-v1", "minimum_measured_runs": 3, "maximum_measured_runs": 0,
     "cleanup_timeout_seconds": 10, "stress_ng": "stress-ng",
 }
 
@@ -81,6 +82,13 @@ def read_config(path):
         raise ValueError("Unsafe CPU/temperature gate")
     if config["temperature_policy"] not in {"abort", "record-only"}:
         raise ValueError("temperature_policy must be abort or record-only")
+    if config["collection_protocol"] not in {"strict-v1", "fast-v2"}:
+        raise ValueError("Unknown collection protocol")
+    minimum, maximum = config["minimum_measured_runs"], config["maximum_measured_runs"]
+    if int(minimum) != minimum or int(maximum) != maximum or maximum < 0 or minimum < (2 if config["collection_protocol"] == "fast-v2" else 3):
+        raise ValueError("Invalid protocol measurement limits")
+    if maximum and maximum < minimum:
+        raise ValueError("Measurement cap is below the minimum count")
     if config["load_type"] == "cpu" and (config["target_cpu_fraction"] <= 0 or config["memory_budget_fraction"] != 0):
         raise ValueError("CPU load requires a positive CPU target and no memory stress")
     if config["load_type"] == "memory" and (config["memory_budget_fraction"] <= 0 or config["target_cpu_fraction"] != 0):
@@ -93,7 +101,10 @@ def read_config(path):
 def validate_args(args, results_dir):
     if getattr(args, "load_config", None) is None:
         return
-    read_config(args.load_config)
+    config = read_config(args.load_config)
+    if config["collection_protocol"] == "fast-v2":
+        if getattr(args, "min_measured_runs", None) != config["minimum_measured_runs"] or getattr(args, "max_measured_runs", None) != config["maximum_measured_runs"]:
+            raise ValueError("Pipeline repetition limits must match the fast-v2 load configuration")
     if args.prometheus_exporter not in {"node", "auto"} or not args.prometheus_job or not args.prometheus_instance:
         raise ValueError("Load experiments require node exporter and explicit --prometheus-job/--prometheus-instance")
     if getattr(args, "no_run", False) or getattr(args, "build_only", False):
@@ -272,6 +283,35 @@ def fresh_scrape_times(core, args, selector, start, end, interval):
     return output
 
 
+class InsufficientScrapes(RuntimeError):
+    def __init__(self, times):
+        super().__init__("Not enough distinct in-window CPU/memory scrapes; query points are not raw scrapes")
+        self.times = times
+
+
+def short_during_allowed(record):
+    window = record["phase_windows"]["during"]
+    config = record["config"]
+    interval = record["monitoring_preflight"]["scrape_interval_seconds"]
+    return config.get("collection_protocol", "strict-v1") == "fast-v2" and 0 <= window[1] - window[0] < (config["min_raw_scrapes"] + 1) * interval
+
+
+def monitoring_accepted(record, row):
+    truth = lambda value: str(value).lower() in {"true", "1"}
+    quality = record["phase_quality"]
+    if any(quality.get(p, {}).get("status") != "PASS" or not truth(row.get(f"prometheus_{p}_collection_success")) for p in ["before", "after"]):
+        return False
+    if quality.get("during", {}).get("status") == "PASS":
+        return truth(row.get("prometheus_during_collection_success")) and truth(row.get("prometheus_three_phase_collection_success"))
+    if quality.get("during", {}).get("status") != "MISSING_SHORT_WINDOW" or not short_during_allowed(record):
+        return False
+    numeric = [f"host_{name}_during_{kind}" for name, kind in [
+        ("cpu_usage_pct", "mean"), ("cpu_usage_pct", "max"), ("memory_used_bytes", "mean"), ("memory_used_bytes", "max"),
+        ("disk_read_bytes", "delta"), ("disk_write_bytes", "delta"), ("network_bytes", "delta")]]
+    return (not truth(row.get("prometheus_during_collection_success")) and not truth(row.get("prometheus_three_phase_collection_success"))
+            and all(row.get(k, "") == "" for k in numeric))
+
+
 class LoadSession:
     def __init__(self, args, core, identity):
         self.args, self.core, self.identity = args, core, identity
@@ -283,6 +323,11 @@ class LoadSession:
             "after_phase_load_policy": "background_load_still_active; cleanup is outside all three phases",
             "before_phase_policy": "after load stabilization and before the first warmup/measurement invocation",
             "control_parameters_are_model_inputs": False, "safety_samples": [], "phase_quality": {}}
+        prepared = getattr(args, "_preparation_provenance", {}).get((identity.get("program_id"), identity.get("input_id")))
+        if prepared:
+            self.record["preparation"] = prepared
+        self.record["measurement_policy"] = {"minimum_runs": self.config["minimum_measured_runs"],
+            "maximum_runs": self.config["maximum_measured_runs"], "budget_seconds": getattr(args, "measurement_seconds", None)}
         self.process = None
         self.log = None
         self.error = ""
@@ -352,7 +397,7 @@ class LoadSession:
     def checked_scrapes(self, start, end):
         times = fresh_scrape_times(self.core, self.args, self.monitor["selector"], start, end, self.interval)
         if any(len(values) < self.config["min_raw_scrapes"] for values in times.values()):
-            raise RuntimeError("Not enough distinct in-window CPU/memory scrapes; query points are not raw scrapes")
+            raise InsufficientScrapes(times)
         if any(end - values[-1] > 2.5 * self.interval for values in times.values()):
             raise RuntimeError("Node exporter samples are stale")
         return times
@@ -511,7 +556,12 @@ class LoadSession:
             self.record["phase_quality"][phase] = {"status": "PASS", "distinct_raw_scrapes": {key: len(v) for key, v in times.items()},
                 "scrape_timestamps": times}
         except Exception as exc:
-            self.record["phase_quality"][phase] = {"status": "FAIL", "error": str(exc)}
+            if isinstance(exc, InsufficientScrapes) and phase == "during" and short_during_allowed(self.record):
+                self.record["phase_quality"][phase] = {"status": "MISSING_SHORT_WINDOW",
+                    "error": "Short bounded measurement window: during metrics unavailable, not zero or padded",
+                    "distinct_raw_scrapes": {key: len(v) for key, v in exc.times.items()}, "scrape_timestamps": exc.times}
+            else:
+                self.record["phase_quality"][phase] = {"status": "FAIL", "error": str(exc)}
             self.save()
             raise
         self.save()
@@ -621,7 +671,9 @@ def finalize(args, summary_path, runs_path, summary_rows, run_rows):
             "run_id_count": len(ids), "first_run_id": ids[0] if ids else None, "last_run_id": ids[-1] if ids else None,
             "run_ids_sha256": hashlib.sha256(json.dumps(ids).encode()).hexdigest()}
         load.record["measured_summary"] = {k: v for k, v in row.items() if k.startswith(("host_", "prometheus_", "gpu_", "runtime_")) or k in {"run_success", "measured_runs"}}
-        phases_ok = all(load.record["phase_quality"].get(phase, {}).get("status") == "PASS" for phase in ["before", "during", "after"])
+        phases_ok = monitoring_accepted(load.record, row)
+        load.record["monitoring_acceptance"] = ("COMPLETE_THREE_PHASE" if row.get("prometheus_three_phase_collection_success") is True
+                                                else "SHORT_DURING_MISSING" if phases_ok else "FAIL")
         actual_cpu = row.get("host_cpu_usage_pct_before_mean", "")
         if load.config["load_type"] == "cpu":
             control_ok = isinstance(actual_cpu, (int, float)) and abs(actual_cpu - 100 * load.config["target_cpu_fraction"]) <= load.config["cpu_tolerance_pct"]
@@ -632,10 +684,11 @@ def finalize(args, summary_path, runs_path, summary_rows, run_rows):
             control_ok &= isinstance(actual_memory, (int, float)) and (actual_memory - load.record["baseline_metrics"]["host_memory_used_bytes_mean"] >=
                 .7 * load.record["memory_control"]["allocation_bytes"])
         load.record["before_load_control_validated"] = bool(control_ok)
-        enough_runs = sum(r.get("phase") == "measure" and r.get("success") is True for r in runs) >= 3
+        measured_count = sum(r.get("phase") == "measure" and r.get("success") is True for r in runs)
+        enough_runs = measured_count >= load.config["minimum_measured_runs"] and (not load.config["maximum_measured_runs"] or measured_count <= load.config["maximum_measured_runs"])
         gpu_ok = getattr(args, "gpu_metrics", "off") == "off" or row.get("gpu_three_phase_collection_success") is True
         load.record["status"] = "PASS" if (phases_ok and control_ok and enough_runs and gpu_ok and
-            row.get("prometheus_three_phase_collection_success") is True and row.get("run_success") is True and load.record.get("cleanup_success")) else "FAIL"
+            row.get("run_success") is True and load.record.get("cleanup_success")) else "FAIL"
         load.save()
     if any(load.record["status"] != "PASS" for load in getattr(args, "_load_sessions", [])):
         raise RuntimeError("Load/monitoring validation failed; results preserved but not accepted as a valid load experiment")

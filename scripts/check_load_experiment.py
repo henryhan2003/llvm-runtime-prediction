@@ -38,7 +38,7 @@ def validate_trial(trial):
     require(len(sidecars) == 1, "Expected exactly one load sidecar per isolated configuration")
     record = sidecars[0]
     # Sidecars collected before the explicit policy option used the abort behavior.
-    config = {"temperature_policy": "abort", **record["config"]}
+    config = {**load.DEFAULTS, **record["config"]}
     require(config == load.read_config(trial["config_path"]), "Sidecar control configuration mismatch")
     require(record["status"] == "PASS" and record["cleanup_success"] and record["before_load_control_validated"], "Load/monitoring/cleanup quality failed")
     require(record["config"]["profile_id"] == trial["profile_id"], "Profile identity mismatch")
@@ -53,26 +53,44 @@ def validate_trial(trial):
     require(row["program_id"] == identity["program_id"] and row["input_id"] == identity["input_id"], "Summary identity mismatch")
     require((row["program_id"] == trial["program"] or Path(row["program_id"]).stem == trial["program"]) and
             row["input_id"] == trial["input_profile"], "Manifest program/size differs from collected row")
-    require(true(row["run_success"]) and true(row["prometheus_three_phase_collection_success"]), "Collection failed")
+    require(true(row["run_success"]) and load.monitoring_accepted(record, row), "Collection failed")
+    if record.get("preparation"):
+        try:
+            import polybench_preparation_cache as cache
+        except ImportError:
+            from scripts import polybench_preparation_cache as cache
+        preparation = record["preparation"]
+        receipt = Path(preparation["manifest_file"])
+        require(cache.sha256(receipt) == preparation["manifest_sha256"], "Preparation receipt changed")
+        _, verified = cache.read_verified(receipt.parent, preparation["key"])
+        require(verified["executable_sha256"] == preparation["executable_sha256"], "Cached executable changed")
+        require(verified["program_id"] == row["program_id"] and verified["input_profile"] == row["input_id"], "Cached preparation identity differs from result")
     details = rows(record["outputs"]["runs_file"])
     ids = [r["run_id"] for r in details]
     require(len(set(ids)) == len(ids) and len(ids) == record["outputs"]["run_id_count"], "Run IDs not unique/complete")
     require(hashlib.sha256(json.dumps(ids).encode()).hexdigest() == record["outputs"]["run_ids_sha256"], "Run IDs changed")
     measured = [r for r in details if r["phase"] == "measure" and true(r["success"])]
-    require(len(measured) >= 3 and int(row["measured_runs"]) == len(measured), "At least three valid measurements required")
+    require(len(measured) >= config["minimum_measured_runs"] and int(row["measured_runs"]) == len(measured), "Too few valid measurements for the recorded protocol")
+    require(not config["maximum_measured_runs"] or len(measured) <= config["maximum_measured_runs"], "Measurement cap exceeded")
     runtimes = [float(r["runtime_sec"]) for r in measured]
     require(all(math.isfinite(t) and t > 0 for t in runtimes), "Invalid runtime")
+    during = record["phase_windows"]["during"]
+    require(sum(runtimes) <= during[1] - during[0] + .001, "Measured invocations do not fit inside the during window")
     require(math.isclose(statistics.median(runtimes), float(row["runtime_sec_median"]), rel_tol=1e-8, abs_tol=1e-10), "Runtime median mismatch")
     for phase in ["before", "during", "after"]:
         quality = record["phase_quality"][phase]
-        require(quality["status"] == "PASS" and min(quality["distinct_raw_scrapes"].values()) >= record["config"]["min_raw_scrapes"], "Insufficient raw scrapes")
-        require(true(row[f"prometheus_{phase}_collection_success"]), "Phase monitoring failed")
+        short_missing = phase == "during" and quality["status"] == "MISSING_SHORT_WINDOW" and load.short_during_allowed(record)
+        if short_missing:
+            require(min(quality["distinct_raw_scrapes"].values()) < config["min_raw_scrapes"], "Invalid short-window classification")
+        else:
+            require(quality["status"] == "PASS" and min(quality["distinct_raw_scrapes"].values()) >= config["min_raw_scrapes"], "Insufficient raw scrapes")
+            require(true(row[f"prometheus_{phase}_collection_success"]), "Phase monitoring failed")
         for edge, timestamp in zip(["start", "end"], record["phase_windows"][phase]):
             require(math.isclose(float(row[f"prometheus_{phase}_window_{edge}_timestamp"]), timestamp, abs_tol=1e-6, rel_tol=0), "Phase window association changed")
         for metric, timestamps in quality["scrape_timestamps"].items():
             start, end = record["phase_windows"][phase]
             unique = {t for t in timestamps if math.isfinite(t) and start <= t <= end}
-            require(len(unique) == quality["distinct_raw_scrapes"][metric] and len(unique) >= record["config"]["min_raw_scrapes"],
+            require(len(unique) == quality["distinct_raw_scrapes"][metric] and (short_missing or len(unique) >= config["min_raw_scrapes"]),
                     "Raw scrape counts/timestamps disagree")
     windows = record["phase_windows"]
     require(record["stable_at"] <= windows["before"][0] <= windows["before"][1] <= record["target_first_invocation_at"] <= windows["during"][0], "Before phase was not before target startup")
@@ -93,6 +111,10 @@ def validate_trial(trial):
             result[field] = float(row[field]) if row[field] else ""
     result["scrape_interval_seconds"] = record["monitoring_preflight"]["scrape_interval_seconds"]
     result["temperature_policy"] = config["temperature_policy"]
+    result["collection_protocol"] = config["collection_protocol"]
+    result["during_monitoring_status"] = record["phase_quality"]["during"]["status"]
+    result["preparation_cache_hit"] = record.get("preparation", {}).get("cache_hit", "")
+    result["preparation_cache_key"] = record.get("preparation", {}).get("key", "")
     temperatures = [s["temperature_max_celsius"] for s in record.get("safety_samples", [])
                     if isinstance(s.get("temperature_max_celsius"), (int, float)) and math.isfinite(s["temperature_max_celsius"])]
     result["temperature_peak_observed_celsius_ANALYSIS_ONLY"] = max(temperatures) if temperatures else ""
@@ -111,10 +133,22 @@ def validate(manifest_path):
     for trial in manifest["trials"]:
         try:
             collected.append(validate_trial(trial))
-        except (ValueError, OSError, KeyError, TypeError, ZeroDivisionError) as exc:
+        except (ValueError, RuntimeError, OSError, KeyError, TypeError, ZeroDivisionError) as exc:
             errors.append(f"{trial['trial_id']}: {exc}")
     keys = [(t["load_family"], t["program"], t["input_profile"], t["profile_id"]) for t in manifest["trials"]]
     require(len(set(keys)) == len(keys), "Duplicate experiment configurations")
+    preparation_keys = {}
+    for item in collected:
+        if item["preparation_cache_key"]:
+            preparation_keys.setdefault((item["program_id"], item["input_id"]), set()).add(item["preparation_cache_key"])
+    if any(len(keys) != 1 for keys in preparation_keys.values()):
+        errors.append("Preparation changed across load conditions for the same program/input")
+    if manifest.get("preparation_cache", {}).get("enabled"):
+        if any(not item["preparation_cache_key"] for item in collected):
+            errors.append("Shared preparation receipt missing")
+        expected = manifest["preparation_cache"]["expected_unique_preparations"]
+        if len(preparation_keys) != expected:
+            errors.append("Shared preparation workload coverage differs from plan")
     for item in collected:
         idle = next((r for r in collected if r["load_family"] == item["load_family"] and r["program_id"] == item["program_id"] and
                      r["input_id"] == item["input_id"] and r["profile_id"].endswith("_IDLE")), None)
@@ -138,9 +172,14 @@ def validate(manifest_path):
         "validated_configurations": len(collected), "expected_configurations": len(manifest["trials"]),
         "cpu_four_levels_validated": complete_families["cpu"], "memory_four_levels_validated": complete_families["memory"],
         "temperature_policies": sorted({item["temperature_policy"] for item in collected}),
+        "collection_protocols": sorted({item["collection_protocol"] for item in collected}),
+        "complete_three_phase_configurations": sum(item["during_monitoring_status"] == "PASS" for item in collected),
+        "short_during_missing_configurations": sum(item["during_monitoring_status"] == "MISSING_SHORT_WINDOW" for item in collected),
+        "preparation_cache_hits": sum(item["preparation_cache_hit"] is True for item in collected),
+        "unique_preparations": len(preparation_keys),
         "temperature_record_only_configurations": sum(item["temperature_policy"] == "record-only" for item in collected),
         "thermal_safety_and_absence_of_throttling_validated": False,
-        "validation_scope": "Collection, timing, load control and cleanup only; PASS does not certify thermal safety or absence of throttling.",
+        "validation_scope": "Timing, recorded-protocol monitoring, load control and cleanup only; fast-v2 explicitly permits missing short-window during metrics. PASS does not certify complete three-phase monitoring, thermal safety or absence of throttling.",
         "errors": errors, "raw_csv_modified": False,
         "comparison_fields_are_analysis_not_a_prediction_whitelist": True}
     root = manifest_path.parent
