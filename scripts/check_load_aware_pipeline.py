@@ -46,7 +46,7 @@ def main():
     args = parser.parse_args()
     suite = unittest.TestSuite()
     loader = unittest.TestLoader()
-    for pattern in ["test_pipeline*.py", "test_resource_load.py", "test_load_fast_protocol.py"]:
+    for pattern in ["test_pipeline*.py", "test_resource_load.py", "test_load_fast_protocol.py", "test_openmp_fast_protocol.py"]:
         suite.addTests(loader.discover(str(ROOT / "tests"), pattern=pattern))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     preservation = source_preservation_audit()

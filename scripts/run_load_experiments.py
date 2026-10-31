@@ -41,17 +41,20 @@ def workload_catalog(dataset, stage, selected):
             raise ValueError("Unknown PolyBench program")
         sizes = ["MINI_DATASET", "MEDIUM_DATASET", "EXTRALARGE_DATASET"] if stage == "pilot" else [f"SIZE_{i:02d}" for i in range(1, 21)]
         return [(name, size, {"source": sources[name], "all_sources": sorted(sources.values())}) for name in ids for size in sizes]
-    if stage == "pilot":
+    if stage == "pilot" and dataset != "openmp":
         raise ValueError("The initial pilot is PolyBench only; validate it before Rodinia batch execution")
     manifest_path = ROOT / f"configs/rodinia_{dataset}_20sizes.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     benchmarks = [b for b in manifest["benchmarks"] if b.get("enabled", True)]
+    if stage == "pilot" and not selected:
+        selected = ["bfs", "myocyte"]
     if selected:
         if set(selected) - {b["id"] for b in benchmarks}:
             raise ValueError("Unknown or disabled Rodinia benchmark")
         benchmarks = [b for b in benchmarks if b["id"] in selected]
+    sizes = {"SIZE_01", "SIZE_10", "SIZE_20"} if stage == "pilot" else {f"SIZE_{i:02d}" for i in range(1, 21)}
     return [(b["id"], item["id"], {"manifest": str(manifest_path.relative_to(ROOT))})
-            for b in benchmarks for item in b["inputs"] if item["id"].startswith("SIZE_")]
+            for b in benchmarks for item in b["inputs"] if item["id"] in sizes]
 
 
 def command_for(args, program, size, info, config_path, results):
@@ -76,6 +79,10 @@ def command_for(args, program, size, info, config_path, results):
         return [args.python, str(ROOT / "scripts/pipeline_new.py"), *common, *specific]
     specific = ["--manifest", str(ROOT / info["manifest"]), "--benchmark", program,
                 "--input-profile", size, "--collect-static"]
+    if args.dataset == "openmp":
+        specific += ["--max-measured-runs", str(args.max_measured_runs)]
+        if args.protocol == "fast-v2":
+            specific += ["--preparation-cache-dir", str(results.parent.parent / "preparation_cache")]
     if args.dataset == "cuda":
         specific += ["--cuda-arch", args.cuda_arch, "--gpu-index", str(args.gpu_index)]
     return [args.python, str(ROOT / f"scripts/pipeline_rodinia{'_cuda' if args.dataset == 'cuda' else ''}.py"), *common, *specific]
@@ -89,8 +96,8 @@ def apply_protocol_defaults(args):
     for name, value in defaults.items():
         if getattr(args, name) is None:
             setattr(args, name, value)
-    if args.protocol == "fast-v2" and args.dataset != "polybench":
-        raise ValueError("fast-v2 preparation reuse is currently validated for PolyBench CPU serial only")
+    if args.protocol == "fast-v2" and args.dataset == "cuda":
+        raise ValueError("fast-v2 preparation reuse supports PolyBench/OpenMP only; CUDA is not adapted")
 
 
 def create_manifest(args, root):
@@ -130,13 +137,17 @@ def create_manifest(args, root):
                ROOT / "scripts/pipeline_new.py", ROOT / "scripts/pipeline_rodinia.py", ROOT / "scripts/pipeline_rodinia_cuda.py",
                ROOT / "scripts/run_load_experiments.py", ROOT / "scripts/check_load_experiment.py"]
     tracked.append(ROOT / "scripts/polybench_preparation_cache.py")
+    if args.dataset == "openmp":
+        tracked += [ROOT / "scripts/openmp_preparation_cache.py", ROOT / "configs/rodinia_openmp_20sizes.json"]
+    expected_preparations = len({program for program, _, _ in workload}) if args.dataset == "openmp" else len(workload)
     return {"schema_version": 1, "stage": args.stage, "status": "PLANNED", "dataset": args.dataset,
         "collection_protocol": args.protocol,
         "measurement_policy": {"minimum_runs": args.min_measured_runs, "maximum_runs": args.max_measured_runs,
             "budget_seconds": args.measurement_seconds, "context_seconds": args.context_seconds,
             "short_during_missing_permitted": args.protocol == "fast-v2"},
         "preparation_cache": {"enabled": args.protocol == "fast-v2", "directory": str(root / "preparation_cache"),
-            "expected_unique_preparations": len(workload) if args.protocol == "fast-v2" else 0,
+            "expected_unique_preparations": expected_preparations if args.protocol == "fast-v2" else 0,
+            "scope": "benchmark" if args.dataset == "openmp" else "program_input",
             "timings_and_load_observations_cached": False},
         "created_at_utc": datetime.now(timezone.utc).isoformat(), "execution_host": socket.gethostname() if args.execute else None,
         "trials": trials, "load_families": args.load_types, "prediction_features_changed": False,
@@ -148,12 +159,19 @@ def check_batch_gate(args):
     if args.stage != "batch":
         return
     if args.pilot_validation is None:
-        raise ValueError("Batch execution requires --pilot-validation from a successful real PolyBench load pilot")
+        raise ValueError("Batch execution requires --pilot-validation from a successful real load pilot")
     report = json.loads(args.pilot_validation.read_text(encoding="utf-8"))
-    if report.get("status") != "PASS" or report.get("stage") != "pilot" or report.get("dataset") != "polybench":
+    expected_dataset = "openmp" if args.dataset == "openmp" and args.protocol == "fast-v2" else "polybench"
+    if report.get("status") != "PASS" or report.get("stage") != "pilot" or report.get("dataset") != expected_dataset:
+        if expected_dataset == "openmp":
+            raise ValueError("OpenMP fast-v2 batch requires its own successful OpenMP pilot; do not reuse the PolyBench report")
         raise ValueError("Pilot validation has not passed")
     if report.get("hostname") != socket.gethostname() or not report.get("cpu_four_levels_validated"):
         raise ValueError("Pilot must validate all four CPU levels on this host")
+    if expected_dataset == "openmp" and (report.get("validated_configurations", 0) < 24 or
+            report.get("validated_configurations") != report.get("expected_configurations") or
+            set(report.get("preparation_cache_kinds", [])) != {"rodinia_openmp_v1"} or report.get("unique_preparations", 0) < 2):
+        raise ValueError("OpenMP fast-v2 pilot must validate at least 24 configurations and its benchmark-scoped cache")
     if set(report.get("temperature_policies", ["abort"])) != {args.temperature_policy}:
         raise ValueError("Batch temperature policy must match the validated pilot")
     if set(report.get("collection_protocols", ["strict-v1"])) != {args.protocol}:
@@ -183,7 +201,7 @@ def build_parser():
     parser.add_argument("--dataset", choices=["polybench", "openmp", "cuda"], default="polybench")
     parser.add_argument("--stage", choices=["pilot", "batch"], default="pilot")
     parser.add_argument("--protocol", choices=["strict-v1", "fast-v2"], default="strict-v1",
-                        help="fast-v2: PolyBench preparation cache, 2-10 measured runs, shorter monitored contexts; short during metrics may be missing")
+                        help="fast-v2: PolyBench/OpenMP preparation reuse, 2-10 measured runs and shorter contexts; short during may be missing")
     parser.add_argument("--program", action="append", default=[])
     parser.add_argument("--load-types", nargs="+", choices=["cpu", "memory"], default=["cpu"])
     parser.add_argument("--execute", action="store_true", help="Actually run Linux benchmarks and pressure; default is plan-only")
@@ -293,6 +311,8 @@ def main(argv=None):
         manifest["status"] = report["status"]
         load.write_json(path, manifest)
         print(f"[{report['status']}] {root / 'validation_report.json'}", flush=True)
+        if report.get("sample_table"):
+            print(f"[results] {report['sample_table']}", flush=True)
         return 0 if report["status"] == "PASS" else 1
     except BaseException as exc:
         manifest["status"] = "FAIL"

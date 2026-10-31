@@ -39,6 +39,11 @@ try:
 except ImportError:
     from scripts import cpu_runtime_parameters as cpu_runtime
 
+try:
+    import openmp_preparation_cache as preparation_cache
+except ImportError:
+    from scripts import openmp_preparation_cache as preparation_cache
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -1202,6 +1207,8 @@ def measure_input(
     phase_windows: dict[str, tuple[float, float]] | None = None,
     prometheus_context_seconds: float = 0.0,
     load_guard=None,
+    max_measured_runs: int = 0,
+    expected_executable_sha256: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     workdir = openmp_root / spec.workdir
     executable = (workdir / spec.executable).resolve()
@@ -1218,6 +1225,8 @@ def measure_input(
     warmup_completed = 0
 
     def execute(phase: str, index: int) -> ProcessResult:
+        if expected_executable_sha256 is not None:
+            preparation_cache.verify_execution_file(executable, expected_executable_sha256)
         if load_guard is not None:
             load_guard.before_invocation(phase, index)
         started_at = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -1259,6 +1268,8 @@ def measure_input(
         during_start = time.time()
         index = 1
         while True:
+            if max_measured_runs and len(measured_results) >= max_measured_runs:
+                break
             if measurement_seconds > 0:
                 if (
                     len(measured_results) >= min_measured_runs
@@ -1396,6 +1407,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--warmup", type=int, default=1, help="Warmup run count; use 5 for formal collection.")
     parser.add_argument("--runs", type=int, default=5, help="Measured runs when --measurement-seconds is 0.")
     parser.add_argument("--measurement-seconds", type=float, default=10.0)
+    parser.add_argument("--max-measured-runs", type=int, default=0, help="Formal invocation cap; 0 preserves legacy unbounded-budget behavior.")
+    parser.add_argument("--preparation-cache-dir", type=Path, default=None, help="Verified per-benchmark build/static reuse; runtime/input observations are never cached.")
     parser.add_argument(
         "--min-measured-runs",
         type=int,
@@ -1444,6 +1457,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         or args.runs < 1
         or args.min_measured_runs < 1
         or args.measurement_seconds < 0
+        or args.max_measured_runs < 0
+        or (args.max_measured_runs and args.max_measured_runs < args.min_measured_runs)
     ):
         parser.error(
             "warmup must be >= 0, runs/min-measured-runs >= 1, "
@@ -1547,24 +1562,18 @@ def main(argv: list[str] | None = None) -> int:
                     any_failure = True
             continue
 
-        build_success, build_command, build_errors = build_benchmark(
-            spec,
-            openmp_root,
-            args.clean,
-            args.skip_build,
-            args.build_timeout,
-        )
-        if args.collect_static:
-            static_features, static_errors = collect_static_features(
-                spec,
-                openmp_root,
-                args.c_compiler,
-                args.cxx_compiler,
-                args.opt_level,
-                args.results_dir.resolve() / "artifacts" if args.load_config is not None else None,
-            )
+        prepared = None
+        if args.preparation_cache_dir is not None:
+            payload, prepared = preparation_cache.get_or_prepare(sys.modules[__name__], spec, args, openmp_root)
+            build_success, build_command, build_errors = payload["build_success"], payload["build_command"], payload["build_errors"]
+            static_features, static_errors = payload["static_features"], payload["static_errors"]
         else:
-            static_features, static_errors = empty_static("not_requested"), []
+            build_success, build_command, build_errors = build_benchmark(spec, openmp_root, args.clean, args.skip_build, args.build_timeout)
+            if args.collect_static:
+                static_features, static_errors = collect_static_features(spec, openmp_root, args.c_compiler, args.cxx_compiler, args.opt_level,
+                    args.results_dir.resolve() / "artifacts" if args.load_config is not None else None)
+            else:
+                static_features, static_errors = empty_static("not_requested"), []
 
         for item in inputs:
             run_command_display = [f"./{spec.executable}", *expand_tokens(item.args)]
@@ -1637,6 +1646,8 @@ def main(argv: list[str] | None = None) -> int:
                         phase_windows,
                         args.prometheus_context_seconds if host_metric_queries else 0.0,
                         load_guard,
+                        args.max_measured_runs,
+                        prepared["executable_sha256"] if prepared else None,
                     )
                 base_row.update(measured)
                 run_rows.extend(detail_rows)
@@ -1725,7 +1736,8 @@ def main(argv: list[str] | None = None) -> int:
                 "collected_at": collected_at,
                 "manifest": str(manifest_path),
                 "rodinia_root": str(rodinia_root),
-                "arguments": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
+                "arguments": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()
+                              if not key.startswith("_")},
                 "environment": environment_features,
                 "cpu_runtime_parameter_schema": cpu_runtime.schema_description(),
                 "benchmarks": [spec.benchmark_id for spec in selected],

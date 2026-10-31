@@ -55,16 +55,32 @@ def validate_trial(trial):
             row["input_id"] == trial["input_profile"], "Manifest program/size differs from collected row")
     require(true(row["run_success"]) and load.monitoring_accepted(record, row), "Collection failed")
     if record.get("preparation"):
-        try:
-            import polybench_preparation_cache as cache
-        except ImportError:
-            from scripts import polybench_preparation_cache as cache
         preparation = record["preparation"]
+        try:
+            if preparation.get("cache_kind") == "rodinia_openmp_v1":
+                import openmp_preparation_cache as cache
+            else:
+                import polybench_preparation_cache as cache
+        except ImportError:
+            if preparation.get("cache_kind") == "rodinia_openmp_v1":
+                from scripts import openmp_preparation_cache as cache
+            else:
+                from scripts import polybench_preparation_cache as cache
         receipt = Path(preparation["manifest_file"])
         require(cache.sha256(receipt) == preparation["manifest_sha256"], "Preparation receipt changed")
-        _, verified = cache.read_verified(receipt.parent, preparation["key"])
+        payload, verified = cache.read_verified(receipt.parent, preparation["key"])
         require(verified["executable_sha256"] == preparation["executable_sha256"], "Cached executable changed")
-        require(verified["program_id"] == row["program_id"] and verified["input_profile"] == row["input_id"], "Cached preparation identity differs from result")
+        require(verified["program_id"] == row["program_id"], "Cached preparation program differs from result")
+        if preparation.get("cache_kind") == "rodinia_openmp_v1":
+            require(row.get("parallel_model") == "OpenMP" and preparation.get("cache_scope") == "benchmark" and
+                    preparation.get("input_profile") == row["input_id"], "OpenMP preparation scope/input differs from result")
+            require(preparation.get("execution_verification") == "sha256_before_each_invocation" and
+                    preparation.get("execution_path") == verified["execution_path"], "OpenMP execution provenance mismatch")
+            for name, value in payload["static_features"].items():
+                require(name in row and (math.isclose(float(row[name]), float(value), rel_tol=1e-12, abs_tol=1e-12)
+                        if isinstance(value, (int, float)) else row[name] == str(value)), "Cached static value changed: " + name)
+        else:
+            require(verified["input_profile"] == row["input_id"], "Cached preparation input differs from result")
     details = rows(record["outputs"]["runs_file"])
     ids = [r["run_id"] for r in details]
     require(len(set(ids)) == len(ids) and len(ids) == record["outputs"]["run_id_count"], "Run IDs not unique/complete")
@@ -115,10 +131,37 @@ def validate_trial(trial):
     result["during_monitoring_status"] = record["phase_quality"]["during"]["status"]
     result["preparation_cache_hit"] = record.get("preparation", {}).get("cache_hit", "")
     result["preparation_cache_key"] = record.get("preparation", {}).get("key", "")
+    result["preparation_cache_scope"] = record.get("preparation", {}).get("cache_scope", "program_input")
+    result["preparation_cache_kind"] = record.get("preparation", {}).get("cache_kind", "polybench_program_input" if record.get("preparation") else "")
     temperatures = [s["temperature_max_celsius"] for s in record.get("safety_samples", [])
                     if isinstance(s.get("temperature_max_celsius"), (int, float)) and math.isfinite(s["temperature_max_celsius"])]
     result["temperature_peak_observed_celsius_ANALYSIS_ONLY"] = max(temperatures) if temperatures else ""
     return result
+
+
+def write_openmp_samples(root, manifest, collected):
+    trials = {item["trial_id"]: item for item in manifest["trials"]}
+    records = []
+    for item in collected:
+        trial = trials[item["trial_id"]]
+        row = rows(item["summary_file"])[0]
+        identity = [manifest["created_at_utc"], manifest["execution_host"], trial["trial_id"], trial["config_sha256"]]
+        sid = "load_" + hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
+        metadata = {"sample_id": sid, "trial_id": trial["trial_id"], "load_profile_id": trial["profile_id"], "load_type": trial["load_family"]}
+        require(not set(metadata) & set(row), "Sample metadata would overwrite an observed field")
+        records.append({**metadata, **row})
+    require(len({r["sample_id"] for r in records}) == len(records), "Aggregate sample IDs are not unique")
+    destination = root / "results.csv"
+    temporary = root / "results.csv.tmp"
+    fields = list(dict.fromkeys(name for record in records for name in record))
+    with temporary.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(records)
+    temporary.replace(destination)
+    reread = rows(destination)
+    require(reread == [{name: str(record.get(name, "")) for name in fields} for record in records], "Aggregate CSV changed observed values")
+    return destination
 
 
 def validate(manifest_path):
@@ -140,7 +183,8 @@ def validate(manifest_path):
     preparation_keys = {}
     for item in collected:
         if item["preparation_cache_key"]:
-            preparation_keys.setdefault((item["program_id"], item["input_id"]), set()).add(item["preparation_cache_key"])
+            group = (item["program_id"], "benchmark") if item["preparation_cache_scope"] == "benchmark" else (item["program_id"], item["input_id"])
+            preparation_keys.setdefault(group, set()).add(item["preparation_cache_key"])
     if any(len(keys) != 1 for keys in preparation_keys.values()):
         errors.append("Preparation changed across load conditions for the same program/input")
     if manifest.get("preparation_cache", {}).get("enabled"):
@@ -161,9 +205,9 @@ def validate(manifest_path):
                 groups.setdefault((item["program_id"], item["input_id"]), set()).add(item["profile_id"])
         complete_families[family] = bool(groups) and all(profiles == {family.upper() + "_" + level for level in ["IDLE", "LOW", "MEDIUM", "HIGH"]} for profiles in groups.values())
     if manifest["stage"] == "pilot":
-        expected_sizes = {"MINI_DATASET", "MEDIUM_DATASET", "EXTRALARGE_DATASET"}
+        expected_sizes = {"SIZE_01", "SIZE_10", "SIZE_20"} if manifest["dataset"] == "openmp" else {"MINI_DATASET", "MEDIUM_DATASET", "EXTRALARGE_DATASET"}
         if len({r["program_id"] for r in collected}) < 2 or {r["input_id"] for r in collected} != expected_sizes:
-            errors.append("Pilot requires at least two programs and all three legacy input profiles")
+            errors.append("Pilot requires at least two programs and all three prescribed input profiles")
         for family in manifest["load_families"]:
             if not complete_families[family]:
                 errors.append(f"Pilot requires all four {family} profiles per program/size")
@@ -177,12 +221,24 @@ def validate(manifest_path):
         "short_during_missing_configurations": sum(item["during_monitoring_status"] == "MISSING_SHORT_WINDOW" for item in collected),
         "preparation_cache_hits": sum(item["preparation_cache_hit"] is True for item in collected),
         "unique_preparations": len(preparation_keys),
+        "preparation_cache_kinds": sorted({item["preparation_cache_kind"] for item in collected if item["preparation_cache_kind"]}),
         "temperature_record_only_configurations": sum(item["temperature_policy"] == "record-only" for item in collected),
         "thermal_safety_and_absence_of_throttling_validated": False,
         "validation_scope": "Timing, recorded-protocol monitoring, load control and cleanup only; fast-v2 explicitly permits missing short-window during metrics. PASS does not certify complete three-phase monitoring, thermal safety or absence of throttling.",
         "errors": errors, "raw_csv_modified": False,
         "comparison_fields_are_analysis_not_a_prediction_whitelist": True}
     root = manifest_path.parent
+    if manifest["dataset"] == "openmp":
+        if report["status"] == "PASS":
+            try:
+                sample_table = write_openmp_samples(root, manifest, collected)
+                report["sample_table"] = str(sample_table)
+                report["sample_table_rows"] = len(collected)
+                report["sample_table_sha256"] = hashlib.sha256(sample_table.read_bytes()).hexdigest()
+            except (OSError, ValueError, KeyError) as exc:
+                report["status"] = "FAIL"
+                report["errors"].append("Aggregate sample export failed: " + str(exc))
+        report["control_labels_in_sample_table_are_metadata_only"] = True
     if collected:
         fields = list(dict.fromkeys(key for item in collected for key in item))
         with (root / "load_experiment_comparisons.csv").open("w", encoding="utf-8-sig", newline="") as stream:
