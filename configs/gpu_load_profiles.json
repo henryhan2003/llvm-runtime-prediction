@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "load_kind": "fixed_buffer_compute_duty_native_context_timeslicing",
+  "profiles": [
+    {"profile_id": "GPU_IDLE", "target_gpu_pct": 0},
+    {"profile_id": "GPU_LOW", "target_gpu_pct": 25},
+    {"profile_id": "GPU_MEDIUM", "target_gpu_pct": 50},
+    {"profile_id": "GPU_HIGH", "target_gpu_pct": 75}
+  ],
+  "control": {
+    "tolerance_pct_points": 8,
+    "max_idle_gpu_pct": 10,
+    "stable_window_seconds": 6,
+    "stable_checks": 3,
+    "min_phase_samples": 3,
+    "startup_timeout_seconds": 30,
+    "stabilization_timeout_seconds": 120,
+    "max_duration_seconds": 1200,
+    "period_ms": 40,
+    "max_temperature_celsius": 85,
+    "memory_reserve_fraction": 0.15,
+    "memory_reserve_bytes": 536870912,
+    "temperature_policy": "abort"
+  },
+  "pilot_programs": ["lavaMD", "hotspot3D", "bfs"],
+  "pilot_sizes": ["SIZE_01", "SIZE_10", "SIZE_20"]
+}

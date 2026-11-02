@@ -57,12 +57,16 @@ def validate_trial(trial):
     if record.get("preparation"):
         preparation = record["preparation"]
         try:
-            if preparation.get("cache_kind") == "rodinia_openmp_v1":
+            if preparation.get("cache_kind") == "rodinia_cuda_v1":
+                import cuda_preparation_cache as cache
+            elif preparation.get("cache_kind") == "rodinia_openmp_v1":
                 import openmp_preparation_cache as cache
             else:
                 import polybench_preparation_cache as cache
         except ImportError:
-            if preparation.get("cache_kind") == "rodinia_openmp_v1":
+            if preparation.get("cache_kind") == "rodinia_cuda_v1":
+                from scripts import cuda_preparation_cache as cache
+            elif preparation.get("cache_kind") == "rodinia_openmp_v1":
                 from scripts import openmp_preparation_cache as cache
             else:
                 from scripts import polybench_preparation_cache as cache
@@ -71,14 +75,22 @@ def validate_trial(trial):
         payload, verified = cache.read_verified(receipt.parent, preparation["key"])
         require(verified["executable_sha256"] == preparation["executable_sha256"], "Cached executable changed")
         require(verified["program_id"] == row["program_id"], "Cached preparation program differs from result")
-        if preparation.get("cache_kind") == "rodinia_openmp_v1":
-            require(row.get("parallel_model") == "OpenMP" and preparation.get("cache_scope") == "benchmark" and
+        if preparation.get("cache_kind") in {"rodinia_openmp_v1", "rodinia_cuda_v1"}:
+            expected_model = "CUDA" if preparation.get("cache_kind") == "rodinia_cuda_v1" else "OpenMP"
+            require(row.get("parallel_model") == expected_model and preparation.get("cache_scope") == "benchmark" and
                     preparation.get("input_profile") == row["input_id"], "OpenMP preparation scope/input differs from result")
             require(preparation.get("execution_verification") == "sha256_before_each_invocation" and
                     preparation.get("execution_path") == verified["execution_path"], "OpenMP execution provenance mismatch")
+            if expected_model == "CUDA":
+                require(preparation.get("gpu_uuid") == verified.get("gpu_uuid") == row.get("gpu_uuid"), "CUDA cached preparation GPU identity changed")
             for name, value in payload["static_features"].items():
-                require(name in row and (math.isclose(float(row[name]), float(value), rel_tol=1e-12, abs_tol=1e-12)
-                        if isinstance(value, (int, float)) else row[name] == str(value)), "Cached static value changed: " + name)
+                if isinstance(value, bool):
+                    matches = name in row and row[name].lower() in ({"true", "1"} if value else {"false", "0"})
+                elif isinstance(value, (int, float)):
+                    matches = name in row and math.isclose(float(row[name]), float(value), rel_tol=1e-12, abs_tol=1e-12)
+                else:
+                    matches = name in row and row[name] == str(value)
+                require(matches, "Cached static value changed: " + name)
         else:
             require(verified["input_profile"] == row["input_id"], "Cached preparation input differs from result")
     details = rows(record["outputs"]["runs_file"])
@@ -136,6 +148,16 @@ def validate_trial(trial):
     temperatures = [s["temperature_max_celsius"] for s in record.get("safety_samples", [])
                     if isinstance(s.get("temperature_max_celsius"), (int, float)) and math.isfinite(s["temperature_max_celsius"])]
     result["temperature_peak_observed_celsius_ANALYSIS_ONLY"] = max(temperatures) if temperatures else ""
+    if record.get("gpu_load"):
+        try:
+            import gpu_resource_load as gpu_load
+        except ImportError:
+            from scripts import gpu_resource_load as gpu_load
+        gpu = record["gpu_load"]
+        require(gpu_load.digest(trial["gpu_config_path"]) == trial["gpu_config_sha256"] == gpu["config_sha256"], "GPU control configuration changed")
+        require(gpu_load.read_config(trial["gpu_config_path"]) == gpu["config"] and gpu["config"]["profile_id"] == trial["profile_id"], "GPU control/profile mismatch")
+        require(row.get("gpu_idle_preflight_passed", "").lower() in {"true", "1"}, "GPU was not idle before adding owned experimental load")
+        result.update(gpu_load.validate_record(record, row))
     return result
 
 
@@ -146,6 +168,8 @@ def write_openmp_samples(root, manifest, collected):
         trial = trials[item["trial_id"]]
         row = rows(item["summary_file"])[0]
         identity = [manifest["created_at_utc"], manifest["execution_host"], trial["trial_id"], trial["config_sha256"]]
+        if trial.get("gpu_config_sha256"):
+            identity.append(trial["gpu_config_sha256"])
         sid = "load_" + hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
         metadata = {"sample_id": sid, "trial_id": trial["trial_id"], "load_profile_id": trial["profile_id"], "load_type": trial["load_family"]}
         require(not set(metadata) & set(row), "Sample metadata would overwrite an observed field")
@@ -193,19 +217,32 @@ def validate(manifest_path):
         expected = manifest["preparation_cache"]["expected_unique_preparations"]
         if len(preparation_keys) != expected:
             errors.append("Shared preparation workload coverage differs from plan")
+    if manifest["dataset"] == "cuda" and manifest["load_families"] == ["gpu"]:
+        if {item.get("gpu_uuid") for item in collected} != {manifest.get("gpu_uuid")}:
+            errors.append("Controlled GPU experiment changed physical GPU identity")
     for item in collected:
         idle = next((r for r in collected if r["load_family"] == item["load_family"] and r["program_id"] == item["program_id"] and
                      r["input_id"] == item["input_id"] and r["profile_id"].endswith("_IDLE")), None)
         item["runtime_ratio_to_idle_ANALYSIS_ONLY"] = item["runtime_sec_median"] / idle["runtime_sec_median"] if idle else ""
     complete_families = {}
-    for family in ["cpu", "memory"]:
+    for family in ["cpu", "memory", "gpu"]:
         groups = {}
         for item in collected:
             if item["load_family"] == family:
                 groups.setdefault((item["program_id"], item["input_id"]), set()).add(item["profile_id"])
         complete_families[family] = bool(groups) and all(profiles == {family.upper() + "_" + level for level in ["IDLE", "LOW", "MEDIUM", "HIGH"]} for profiles in groups.values())
+    if manifest["dataset"] == "cuda" and manifest["load_families"] == ["gpu"]:
+        if not complete_families["gpu"]:
+            errors.append("CUDA GPU-load experiment requires every four-level workload quartet")
+        if len(manifest["trials"]) != manifest.get("expected_configurations"):
+            errors.append("CUDA GPU-load configuration count differs from original plan")
+        programs = {item["program_id"] for item in collected}
+        expected_inputs = set(manifest.get("expected_input_profiles", []))
+        if len(programs) != manifest.get("expected_program_count") or not expected_inputs or any(
+                {item["input_id"] for item in collected if item["program_id"] == program} != expected_inputs for program in programs):
+            errors.append("CUDA GPU-load program/input coverage differs from original plan")
     if manifest["stage"] == "pilot":
-        expected_sizes = {"SIZE_01", "SIZE_10", "SIZE_20"} if manifest["dataset"] == "openmp" else {"MINI_DATASET", "MEDIUM_DATASET", "EXTRALARGE_DATASET"}
+        expected_sizes = {"SIZE_01", "SIZE_10", "SIZE_20"} if manifest["dataset"] in {"openmp", "cuda"} else {"MINI_DATASET", "MEDIUM_DATASET", "EXTRALARGE_DATASET"}
         if len({r["program_id"] for r in collected}) < 2 or {r["input_id"] for r in collected} != expected_sizes:
             errors.append("Pilot requires at least two programs and all three prescribed input profiles")
         for family in manifest["load_families"]:
@@ -213,8 +250,9 @@ def validate(manifest_path):
                 errors.append(f"Pilot requires all four {family} profiles per program/size")
     report = {"status": "PASS" if not errors and len(collected) == len(manifest["trials"]) else "FAIL",
         "stage": manifest["stage"], "dataset": manifest["dataset"], "hostname": manifest.get("execution_host"),
-        "validated_configurations": len(collected), "expected_configurations": len(manifest["trials"]),
+        "validated_configurations": len(collected), "expected_configurations": manifest.get("expected_configurations", len(manifest["trials"])),
         "cpu_four_levels_validated": complete_families["cpu"], "memory_four_levels_validated": complete_families["memory"],
+        "gpu_four_levels_validated": complete_families["gpu"],
         "temperature_policies": sorted({item["temperature_policy"] for item in collected}),
         "collection_protocols": sorted({item["collection_protocol"] for item in collected}),
         "complete_three_phase_configurations": sum(item["during_monitoring_status"] == "PASS" for item in collected),
@@ -222,13 +260,16 @@ def validate(manifest_path):
         "preparation_cache_hits": sum(item["preparation_cache_hit"] is True for item in collected),
         "unique_preparations": len(preparation_keys),
         "preparation_cache_kinds": sorted({item["preparation_cache_kind"] for item in collected if item["preparation_cache_kind"]}),
+        "gpu_uuids": sorted({item["gpu_uuid"] for item in collected if item.get("gpu_uuid")}),
+        "measurement_policy": manifest.get("measurement_policy"),
+        "experiment_source_sha256": manifest.get("scripts_and_config_sha256", {}),
         "temperature_record_only_configurations": sum(item["temperature_policy"] == "record-only" for item in collected),
         "thermal_safety_and_absence_of_throttling_validated": False,
         "validation_scope": "Timing, recorded-protocol monitoring, load control and cleanup only; fast-v2 explicitly permits missing short-window during metrics. PASS does not certify complete three-phase monitoring, thermal safety or absence of throttling.",
         "errors": errors, "raw_csv_modified": False,
         "comparison_fields_are_analysis_not_a_prediction_whitelist": True}
     root = manifest_path.parent
-    if manifest["dataset"] == "openmp":
+    if manifest["dataset"] in {"openmp", "cuda"}:
         if report["status"] == "PASS":
             try:
                 sample_table = write_openmp_samples(root, manifest, collected)

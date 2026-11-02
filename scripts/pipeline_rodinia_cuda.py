@@ -32,6 +32,12 @@ try:
 except ImportError:
     from scripts import pipeline_rodinia as base
 
+try:
+    import cuda_preparation_cache
+    import gpu_resource_load
+except ImportError:
+    from scripts import cuda_preparation_cache, gpu_resource_load
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -1236,6 +1242,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--measurement-seconds", type=float, default=10.0)
+    parser.add_argument("--max-measured-runs", type=int, default=0)
+    parser.add_argument("--preparation-cache-dir", type=Path, default=None)
+    parser.add_argument("--gpu-load-config", type=Path, default=None, help="Opt-in controlled GPU load; CPU/host load config must be IDLE.")
     parser.add_argument("--min-measured-runs", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--build-timeout", type=float, default=1200.0)
@@ -1283,6 +1292,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.warmup < 0 or args.runs < 1 or args.min_measured_runs < 1 or args.measurement_seconds < 0:
         parser.error("warmup must be >= 0, runs/min-measured-runs >= 1, and measurement-seconds >= 0")
+    if args.max_measured_runs < 0 or (args.max_measured_runs and args.max_measured_runs < args.min_measured_runs):
+        parser.error("Invalid CUDA measured-run cap")
+    if args.gpu_load_config is not None and (args.load_config is None or args.gpu_metrics != "nvidia-smi" or args.allow_busy_gpu):
+        parser.error("Controlled GPU load requires host guard, live GPU sampling and no --allow-busy-gpu bypass")
     if args.timeout <= 0 or args.build_timeout <= 0 or args.gpu_sample_interval <= 0:
         parser.error("timeouts and GPU sample interval must be positive")
     if (
@@ -1509,10 +1522,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[pipeline] warning: {spec.benchmark_id} has no {args.input_profile} input")
             continue
         print(f"[pipeline] processing {spec.benchmark_id} in {cuda_root / spec.workdir}")
-        build_success, build_command, build_errors = build_benchmark(
-            spec, cuda_root, context, args.clean, args.skip_build, args.build_timeout
-        )
-        if args.collect_static:
+        prepared = None
+        if args.preparation_cache_dir is not None:
+            payload, prepared = cuda_preparation_cache.get_or_prepare(sys.modules[__name__], spec, args, cuda_root, context, device)
+            build_success, build_command, build_errors = payload["build_success"], payload["build_command"], payload["build_errors"]
+            static_features, static_errors = payload["static_features"], payload["static_errors"]
+        else:
+            build_success, build_command, build_errors = build_benchmark(
+                spec, cuda_root, context, args.clean, args.skip_build, args.build_timeout
+            )
+        if args.preparation_cache_dir is None and args.collect_static:
             static_features, static_errors = collect_static_features(
                 spec,
                 cuda_root,
@@ -1534,7 +1553,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"{len(static_errors)} issue(s); details are recorded in the summary",
                     file=sys.stderr,
                 )
-        else:
+        elif args.preparation_cache_dir is None:
             static_features = collect_cuda_source_features_only(
                 spec, cuda_root, "generic_llvm_not_requested"
             )
@@ -1627,10 +1646,10 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         sampler = None
                 try:
-                    with base.resource_load.session(args, base.pipeline_core(), {
+                    with gpu_resource_load.session(args, base.pipeline_core(), {
                         "dataset": "Rodinia-3.1", "execution_model": "CUDA", "session_id": session_id,
                         "program_id": spec.benchmark_id, "input_id": item.input_id, "env_id": args.env_id,
-                    }) as load_guard:
+                    }, sys.modules[__name__], device, sampler, context) as load_guard:
                         measured, details, run_errors = base.measure_input(
                             session_id,
                             spec,
@@ -1644,6 +1663,9 @@ def main(argv: list[str] | None = None) -> int:
                             phase_windows,
                             context_seconds,
                             load_guard,
+                            args.max_measured_runs,
+                            prepared["executable_sha256"] if prepared else None,
+                            cuda_preparation_cache.verify_execution_file if prepared else None,
                         )
                 finally:
                     if sampler is not None:
@@ -1765,6 +1787,7 @@ def main(argv: list[str] | None = None) -> int:
                 "arguments": {
                     key: str(value) if isinstance(value, Path) else value
                     for key, value in vars(args).items()
+                    if not key.startswith("_")
                 },
                 "environment": environment,
                 "benchmarks": [spec.benchmark_id for spec in selected],

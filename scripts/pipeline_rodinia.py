@@ -1209,6 +1209,7 @@ def measure_input(
     load_guard=None,
     max_measured_runs: int = 0,
     expected_executable_sha256: str | None = None,
+    execution_verifier=None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     workdir = openmp_root / spec.workdir
     executable = (workdir / spec.executable).resolve()
@@ -1226,7 +1227,7 @@ def measure_input(
 
     def execute(phase: str, index: int) -> ProcessResult:
         if expected_executable_sha256 is not None:
-            preparation_cache.verify_execution_file(executable, expected_executable_sha256)
+            (execution_verifier or preparation_cache.verify_execution_file)(executable, expected_executable_sha256)
         if load_guard is not None:
             load_guard.before_invocation(phase, index)
         started_at = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -1274,6 +1275,8 @@ def measure_input(
                 if (
                     len(measured_results) >= min_measured_runs
                     and measured_runtime_total >= measurement_seconds
+                    and (load_guard is None or not hasattr(load_guard, "measurement_ready")
+                         or load_guard.measurement_ready(during_start, time.time()))
                 ):
                     break
             elif index > runs:
