@@ -21,9 +21,11 @@ try:
     import resource_load as host
     import run_load_experiments as common
     import check_load_experiment as checker
+    import cpu_runtime_parameters as cpu_runtime
 except ImportError:
     from scripts import gpu_resource_load as gpu, resource_load as host
     from scripts import run_load_experiments as common, check_load_experiment as checker
+    from scripts import cpu_runtime_parameters as cpu_runtime
 
 ROOT=Path(__file__).resolve().parents[1]
 MANIFEST=ROOT / "configs/rodinia_cuda_20sizes.json"
@@ -147,6 +149,8 @@ def create_manifest(args,root):
         "expected_configurations":len(trials),"expected_program_count":len(benchmarks),"expected_input_profiles":sizes,
         "created_at_utc":datetime.now(timezone.utc).isoformat(),"execution_host":socket.gethostname() if args.execute else None,
         "gpu_uuid":None,"gpu_sharing_mode":"native_context_timeslicing_no_MPS","trials":trials,
+        "process_resource_supervision":{"required":True,"probe_schema_version":4,"targets":list(cpu_runtime.RESOURCE_TARGETS),
+                                        "scope":"target host process, not GPU VRAM, device memory traffic or whole-device telemetry"},
         "preparation_cache":{"enabled":True,"directory":str(root/"preparation_cache"),"scope":"benchmark","expected_unique_preparations":len(benchmarks)},
         "measurement_policy":{"warmup":1,"minimum_runs":2,"maximum_runs":args.max_measured_runs,"budget_seconds":3,"context_seconds":6,
                               "gpu_min_poll_observations_per_phase":3,"host_short_during_missing_permitted":True,"gpu_short_missing_permitted":False},
@@ -203,6 +207,8 @@ def batch_gate(args,report):
     gpu.require(pilot.get("status")=="PASS" and pilot.get("stage")=="pilot" and pilot.get("dataset")=="cuda" and
                 pilot.get("gpu_four_levels_validated") and pilot.get("validated_configurations")==pilot.get("expected_configurations")==36 and
                 pilot.get("preparation_cache_kinds")==["rodinia_cuda_v1"],"CUDA GPU-load pilot has not validated the full 36-trial protocol")
+    gpu.require(pilot.get("process_resource_label_configurations")==36 and pilot.get("process_resource_targets")==cpu_runtime.RESOURCE_TARGETS,
+                "Pilot did not validate all five host-process CPU/Memory/IO targets for all 36 configurations; run a new pilot")
     gpu.require(pilot.get("hostname")==socket.gethostname() and pilot.get("gpu_uuids")==[report["gpu_uuid"]],"Pilot GPU/host differs from batch")
     gpu.require(pilot.get("temperature_policies")==[args.temperature_policy],"Pilot/batch temperature policy differs")
     policy=pilot.get("measurement_policy",{})

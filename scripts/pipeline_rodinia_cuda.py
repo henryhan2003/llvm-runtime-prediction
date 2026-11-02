@@ -184,6 +184,7 @@ SUMMARY_FIELDS = [
     *base.PROCESS_FIELDS,
     "process_max_rss_bytes_peak",
     "process_metrics_backend",
+    *base.cpu_runtime.SUMMARY_FIELDS,
     *base.pipeline_core().PROMETHEUS_RESULT_FIELDS,
     *GPU_RESULT_FIELDS,
     *base.ENVIRONMENT_FIELDS,
@@ -1332,11 +1333,23 @@ def _not_run_metrics(context_seconds: float, gpu_interval: float) -> dict[str, A
         **{field: "" for field in base.PROCESS_FIELDS},
         "process_max_rss_bytes_peak": "",
         "process_metrics_backend": "not_run",
+        **base.cpu_runtime.summarize([]),
         **base.pipeline_core().empty_prometheus_three_phase_result(
             None, "Benchmark measurement was not executed", context_seconds
         ),
         **empty_gpu_result(None, "Benchmark measurement was not executed", gpu_interval),
     }
+
+
+def host_monitoring_accepted(args: argparse.Namespace, program_id: str, input_id: str, row: dict[str, Any]) -> bool:
+    if row.get("prometheus_three_phase_collection_success") is True:
+        return True
+    if getattr(args, "load_config", None) is None:
+        return False
+    sessions = [s for s in getattr(args, "_load_sessions", [])
+                if s.identity["program_id"] == program_id and s.identity["input_id"] == input_id]
+    # Reuse the recorded fast-v2 exception; GPU coverage has its own strict gate.
+    return len(sessions) == 1 and base.resource_load.monitoring_accepted(sessions[0].record, row)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1745,6 +1758,13 @@ def main(argv: list[str] | None = None) -> int:
                 row.update(_not_run_metrics(context_seconds, args.gpu_sample_interval))
                 row["run_success"] = "not_run" if args.build_only and build_success else False
 
+            resource_labels_failed = False
+            if args.gpu_load_config is not None and row.get("run_success") is True:
+                try:
+                    base.cpu_runtime.validate_resource_labels(row, details)
+                except ValueError as exc:
+                    resource_labels_failed = True
+                    errors.append(f"CPU_RUNTIME_LABELS: {exc}")
             row["error_message"] = " | ".join(error for error in errors if error)[-12000:]
             summary_rows.append(row)
             metrics_failed = (
@@ -1755,19 +1775,23 @@ def main(argv: list[str] | None = None) -> int:
             host_metrics_failed = (
                 bool(host_queries)
                 and not args.build_only
-                and not row.get("prometheus_three_phase_collection_success")
+                and not host_monitoring_accepted(args, spec.benchmark_id, item.input_id, row)
             )
             static_failed = (
                 args.collect_static and row.get("static_status") != "success"
             )
-            if (
-                not build_success
-                or (not args.build_only and not row.get("run_success"))
-                or metrics_failed
-                or host_metrics_failed
-                or static_failed
-            ):
+            failures = [label for label, failed in [
+                ("build", not build_success),
+                ("execution", not args.build_only and not row.get("run_success")),
+                ("GPU monitoring", metrics_failed),
+                ("host monitoring", host_metrics_failed),
+                ("static extraction", static_failed),
+                ("host process resource labels", resource_labels_failed),
+            ] if failed]
+            if failures:
                 any_failure = True
+                print(f"[pipeline] failed {spec.benchmark_id}[{item.input_id}]: "
+                      f"{', '.join(failures)}; {row['error_message']}", file=sys.stderr)
 
     results_dir = args.results_dir.resolve()
     summary_path = results_dir / f"rodinia_cuda_summary_{session_id}.csv"
@@ -1790,6 +1814,7 @@ def main(argv: list[str] | None = None) -> int:
                     if not key.startswith("_")
                 },
                 "environment": environment,
+                "cpu_runtime_parameter_schema": base.cpu_runtime.schema_description(),
                 "benchmarks": [spec.benchmark_id for spec in selected],
                 "compatibility_skips": compatibility_skips,
                 "gpu_metric_scope_note": (

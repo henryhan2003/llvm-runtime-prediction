@@ -1,4 +1,4 @@
-"""Process-scoped CPU runtime labels shared by the two CPU collection pipelines."""
+"""Host-process runtime labels shared by PolyBench, OpenMP and CUDA pipelines."""
 
 from __future__ import annotations
 
@@ -27,6 +27,8 @@ RUN_FIELDS = [*IO_NUMERIC_FIELDS, "process_io_collection_status", "process_io_co
               *TRANSFER_FIELDS]
 SUMMARY_FIELDS = [*RUN_FIELDS, "process_io_sampled_runs", "process_io_missing_runs"]
 TRANSFER_STATUS = "not_collected_no_workflow_transfer_instrumentation"
+CPU_RESOURCE_FIELDS = ["process_cpu_user_sec", "process_cpu_system_sec", "process_max_rss_bytes"]
+RESOURCE_TARGETS = [*CPU_RESOURCE_FIELDS, "process_io_rchar_bytes", "process_io_wchar_bytes"]
 
 
 def io_collector_binary(root: Path) -> Path:
@@ -119,6 +121,44 @@ def summarize(records: list[dict[str, object]]) -> dict[str, object]:
                      for r in successful if not is_complete(r)})
     summary["process_io_collection_error"] = " | ".join(errors)[:2000]
     return summary
+
+
+def validate_resource_labels(summary: dict[str, object], records: list[dict[str, object]]) -> dict[str, float]:
+    """Reconcile complete v4 host labels; accept CSV strings or in-memory values."""
+    def number(item, field):
+        value = item.get(field)
+        if isinstance(value, bool):
+            raise ValueError(f"Invalid process resource value: {field}")
+        try:
+            value = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Missing process resource value: {field}") from exc
+        if not math.isfinite(value) or value < 0 or (field == "process_max_rss_bytes" and value <= 0):
+            raise ValueError(f"Invalid process resource value: {field}")
+        return value
+
+    measured = [r for r in records if r.get("phase") == "measure" and str(r.get("success")).lower() in {"true", "1"}]
+    if not measured or number(summary, "measured_runs") != len(measured):
+        raise ValueError("Process resource measured-run count mismatch")
+    fields = [*CPU_RESOURCE_FIELDS, *IO_NUMERIC_FIELDS]
+    for index, item in enumerate([summary, *measured]):
+        if item.get("process_metrics_backend") != "linux-process-probe-v4":
+            raise ValueError("Process resource supervision requires the v4 probe, not old/mixed backends")
+        if item.get("process_io_collection_status") != "ok" or item.get("process_io_collection_error"):
+            raise ValueError(f"Process I/O incomplete: {item.get('process_io_collection_status')} {item.get('process_io_collection_error', '')}")
+        for field in fields:
+            number(item, field)
+        if index and any(not number(item, field).is_integer() for field in ["process_max_rss_bytes", *IO_NUMERIC_FIELDS]):
+            raise ValueError("Per-invocation RSS and I/O counters must be whole numbers")
+        if any(item.get(field) != "" for field in TRANSFER_FIELDS[:2]) or item.get("task_transfer_metrics_status") != TRANSFER_STATUS:
+            raise ValueError("Unmeasured task file transfer/bandwidth must remain explicitly missing, not zero")
+    if number(summary, "process_io_sampled_runs") != len(measured) or number(summary, "process_io_missing_runs") != 0:
+        raise ValueError("Process I/O coverage counts do not match the formal invocations")
+    for field in fields:
+        expected = statistics.fmean(number(r, field) for r in measured)
+        if not math.isclose(number(summary, field), expected, rel_tol=1e-9, abs_tol=1e-12):
+            raise ValueError(f"Process resource summary mean mismatch: {field}")
+    return {field: number(summary, field) for field in RESOURCE_TARGETS}
 
 
 def schema_description() -> dict[str, object]:

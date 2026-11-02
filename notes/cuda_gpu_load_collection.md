@@ -5,7 +5,8 @@
 This is a new GPU-load protocol, not the previous four-level CPU stress protocol.
 The CUDA pipeline keeps its existing runtime definition, static extraction and
 GPU/Prometheus field names. CPU and host memory receive no synthetic pressure.
-The original CSV field declarations remain unchanged. Load controls, worker/PID
+Existing CSV fields remain in place. The CUDA summary now adds the same fourteen
+host-process runtime fields already used by PolyBench/OpenMP. Load controls, worker/PID
 provenance, calibration and raw GPU poll observations are stored in load sidecars.
 There is no model training or automatic deletion of earlier results.
 
@@ -14,12 +15,70 @@ four GPU profiles: 36 samples. Full collection covers all 22 currently enabled
 benchmarks, twenty sizes each and four GPU profiles: 1,760 samples. Existing
 smoke/official inputs and disabled benchmarks are not silently substituted.
 
-Local Windows regression: 162 tests ran, 161 passed and one Linux-native probe
-test was skipped. Static extraction functions and original CSV declarations
-passed preservation checks. Native nvcc compilation and real GPU calibration
+Local Windows regression: 204 tests ran, 199 passed and five Linux-native
+probe/collector tests were skipped. Static extraction functions are unchanged;
+original CSV fields are preserved, with only the explicit shared CUDA I/O summary
+extension authorized by the preservation audit. Native nvcc compilation and real GPU calibration
 have NOT been performed locally: this machine has no nvcc. A real Linux pilot
 is mandatory before full collection. The two plan-only manifests are not real
 experimental evidence and cannot unlock a batch.
+
+## Recorded short host windows and exit status
+
+The CUDA exit gate now uses the same recorded fast-v2 host monitoring acceptance
+rule as the load finalizer. Previously a valid MISSING_SHORT_WINDOW host-during
+phase could pass the finalizer, write all output files, and still return exit 1.
+This was reproduced locally in a CUDA-main regression test. The exception requires
+exactly one matching load record, valid host before/after phases, a genuinely
+short fast-v2 during window and blank unavailable host-during values. It never
+relaxes GPU three-phase observations or invents missing resource values. Ordinary
+uncontrolled CUDA collection retains its complete-host-monitoring requirement.
+Rejected configurations now print their failed gate and saved error message.
+
+An empty .gpu.log is not proof of a worker failure: the worker is normally silent
+on success. Inspect the summary error_message and the load-record status,
+monitoring_acceptance and error to distinguish this bug from a real failure.
+After synchronizing this fix, create a fresh pilot directory and retain the old
+failed pilot as evidence. Resume deliberately rejects changed code fingerprints;
+do not edit the old manifest or hashes to bypass that protection.
+
+## Host CPU, memory and I/O label alignment
+
+The shared process probe already collects per-invocation I/O in CUDA run details.
+The missing step was writing cpu_runtime_parameters.SUMMARY_FIELDS into the CUDA
+summary CSV. This is now the same field source as PolyBench/OpenMP, not a parallel
+implementation or new Prometheus metric. The summary grows from 352 to 366 fields.
+The fourteen added fields cover logical read/write bytes, read/write syscall
+counts, storage read/write/cancelled-write bytes, I/O status/error, complete/missing
+formal-run counts, and three explicitly uncollected task-transfer fields.
+Not-run configurations retain blank numeric values and status not_run.
+
+The five host-process supervision targets are:
+- process_cpu_user_sec: user CPU seconds, summed across target threads.
+- process_cpu_system_sec: kernel CPU seconds.
+- process_max_rss_bytes: mean of each formal invocation's peak host RSS, not VRAM.
+- process_io_rchar_bytes: mean logical read bytes, including loader/cache effects.
+- process_io_wchar_bytes: mean logical write bytes, including redirected output.
+
+Aggregation uses successful formal invocations only, excluding warmup. Real zeros
+are valid. Partial/unavailable I/O remains blank with its missing-state marker;
+no biased subset average or zero fill is accepted. Existing v4 timing/probe logic
+is reused, including its instrumentation overhead, without a new resource sampler.
+The environment JSON now includes the same cpu_runtime_parameter_schema v4.
+
+Controlled GPU trials and offline validation both require complete v4 host labels,
+finite/nonnegative counters, positive RSS, matching formal-run coverage and means
+recomputed from the run CSV. Fractional per-run byte/syscall counts, mixed probe
+versions, missing fields and invented task-transfer values fail validation. The
+batch gate requires all five targets to be verified for all 36 pilot samples.
+An old monitoring-only PASS report cannot unlock the new batch. This does not
+relax the recorded short host-during exception or GPU three-phase requirements.
+
+These are host-process labels, not device kernel CPU-equivalent demand, GPU memory
+traffic, H2D/D2H transfer bytes, network transfers or target-exclusive GPU usage.
+No old result CSV is rewritten or retrospectively filled. Synchronize the changed
+code and validate a fresh pilot before full collection; no extra sudo package or
+stress-ng installation is needed beyond the existing C/CUDA toolchains.
 
 ## Background load definition
 
@@ -135,8 +194,10 @@ scripts/pipeline_rodinia.py
 scripts/pipeline_rodinia_cuda.py
 scripts/check_load_experiment.py
 scripts/check_load_aware_pipeline.py
+scripts/cpu_runtime_parameters.py
 configs/gpu_load_profiles.json
 tests/test_cuda_gpu_load.py
+tests/test_cpu_runtime_parameters.py
 notes/cuda_gpu_load_collection.md
 ```
 
@@ -150,7 +211,8 @@ $files = @(
   'scripts/cuda_preparation_cache.py', 'scripts/run_cuda_gpu_load_experiments.py',
   'scripts/pipeline_rodinia.py', 'scripts/pipeline_rodinia_cuda.py',
   'scripts/check_load_experiment.py', 'scripts/check_load_aware_pipeline.py',
-  'configs/gpu_load_profiles.json', 'tests/test_cuda_gpu_load.py',
+  'scripts/cpu_runtime_parameters.py', 'configs/gpu_load_profiles.json',
+  'tests/test_cuda_gpu_load.py', 'tests/test_cpu_runtime_parameters.py',
   'notes/cuda_gpu_load_collection.md'
 )
 git add -- $files
@@ -221,7 +283,7 @@ echo "$CUDA_ROOT"
 ```
 
 The gate checks the 36-trial pilot, all four GPU levels, same GPU UUID/host,
-measurement policy, temperature policy and source fingerprints. Do not pull Git
+all five host resource targets, measurement policy, temperature policy and source fingerprints. Do not pull Git
 changes, rebuild benchmarks or edit controls during a live experiment.
 After PASS the combined table is `$CUDA_ROOT/results.csv`.
 

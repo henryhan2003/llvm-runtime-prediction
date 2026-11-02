@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import cpu_runtime_parameters as runtime
 from test_pipeline_cfg import pipeline as polybench
 import pipeline_rodinia as openmp
+from test_pipeline_rodinia_cuda import pipeline as cuda
 
 
 def probe_values(version="2"):
@@ -163,11 +164,12 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual(12, result["process_fs_outputs"])
         self.assertEqual(15, result["process_io_rchar_bytes"])
 
-    def test_both_csv_schemas_include_all_runtime_fields_once(self):
+    def test_all_three_csv_schemas_include_all_runtime_fields_once(self):
         for fields in [polybench.PROCESS_RUN_FIELDS, polybench.MEASUREMENT_SUMMARY_FIELDS,
-                       openmp.RUN_FIELDS, openmp.SUMMARY_FIELDS]:
+                       openmp.RUN_FIELDS, openmp.SUMMARY_FIELDS, cuda.RUN_FIELDS, cuda.SUMMARY_FIELDS]:
             self.assertEqual(len(fields), len(set(fields)))
             self.assertTrue(set(runtime.RUN_FIELDS).issubset(fields))
+        self.assertTrue(set(runtime.SUMMARY_FIELDS).issubset(cuda.SUMMARY_FIELDS))
 
     def test_schema_marks_dynamic_supervision_not_static_prediction_inputs(self):
         schema = runtime.schema_description()
@@ -204,6 +206,65 @@ class OpenMPIntegrationTests(unittest.TestCase):
             path = Path(directory) / "summary.csv"
             openmp.write_csv(path, [summary], openmp.SUMMARY_FIELDS)
             self.assertIn("process_storage_read_bytes", path.read_text(encoding="utf-8-sig"))
+            cuda_path = Path(directory) / "cuda_summary.csv"
+            openmp.write_csv(cuda_path, [summary], cuda.SUMMARY_FIELDS)
+            import csv
+            with cuda_path.open(encoding="utf-8-sig", newline="") as stream:
+                saved = next(csv.DictReader(stream))
+            for field in runtime.SUMMARY_FIELDS:
+                self.assertEqual(str(summary[field]), saved[field])
+
+
+class ResourceLabelValidationTests(unittest.TestCase):
+    def sample(self):
+        measured = [record(value, process_cpu_user_sec=value / 100, process_cpu_system_sec=0.,
+                           process_max_rss_bytes=value * 1024, process_metrics_backend="linux-process-probe-v4",
+                           **{field: "" for field in runtime.TRANSFER_FIELDS[:2]},
+                           task_transfer_metrics_status=runtime.TRANSFER_STATUS) for value in [10, 20]]
+        summary = {**runtime.summarize(measured), "measured_runs":2, "process_metrics_backend":"linux-process-probe-v4"}
+        summary.update({field: sum(r[field] for r in measured) / len(measured) for field in runtime.CPU_RESOURCE_FIELDS})
+        return summary, measured
+
+    def test_five_targets_and_zero_values_match_csv_and_in_memory(self):
+        summary, measured = self.sample()
+        targets = runtime.validate_resource_labels(summary, measured)
+        self.assertEqual(set(runtime.RESOURCE_TARGETS), set(targets))
+        self.assertEqual(0., targets["process_cpu_system_sec"])
+        as_csv = lambda r: {k:str(v) for k,v in r.items()}
+        self.assertEqual(targets, runtime.validate_resource_labels(as_csv(summary), list(map(as_csv, measured))))
+
+    def test_warmup_and_failed_invocations_do_not_enter_resource_means(self):
+        summary, measured = self.sample()
+        targets = runtime.validate_resource_labels(summary, [{"phase":"warmup", "success":True},
+                                                            {"phase":"measure", "success":False}, *measured])
+        self.assertEqual(15., targets["process_io_rchar_bytes"])
+
+    def test_missing_partial_nonfinite_old_backend_and_wrong_means_fail(self):
+        from copy import deepcopy
+        for field, value in [("process_io_rchar_bytes", ""), ("process_io_wchar_bytes", float("nan")),
+                             ("process_cpu_user_sec", float("inf")), ("process_max_rss_bytes", 0),
+                             ("process_io_collection_status", "partial"), ("process_io_collection_error", "Permission denied"),
+                             ("process_metrics_backend", "linux-process-probe-v1"), ("process_io_rchar_bytes", -1),
+                             ("process_io_wchar_bytes", True), ("task_file_transfer_bytes", 0)]:
+            for position in ["summary", "detail"]:
+                summary, measured = self.sample()
+                item = summary if position == "summary" else measured[0]
+                item[field] = value
+                with self.subTest(field=field, value=value, position=position), self.assertRaises(ValueError):
+                    runtime.validate_resource_labels(summary, measured)
+        summary, measured = self.sample()
+        for field, value in [("process_io_sampled_runs", 1), ("process_io_missing_runs", 1),
+                             ("measured_runs", 3), ("process_io_rchar_bytes", 999)]:
+            changed = deepcopy(summary);changed[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                runtime.validate_resource_labels(changed, measured)
+
+    def test_raw_io_counter_cannot_be_fractional_even_if_summary_matches(self):
+        summary, measured = self.sample()
+        measured[0]["process_io_rchar_bytes"] = 10.5
+        summary["process_io_rchar_bytes"] = 15.25
+        with self.assertRaisesRegex(ValueError, "whole numbers"):
+            runtime.validate_resource_labels(summary, measured)
 
 
 class OpenMPRepairValidationTests(unittest.TestCase):

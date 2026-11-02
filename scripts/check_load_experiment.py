@@ -12,8 +12,10 @@ import statistics
 
 try:
     import resource_load as load
+    import cpu_runtime_parameters as cpu_runtime
 except ImportError:
     from scripts import resource_load as load
+    from scripts import cpu_runtime_parameters as cpu_runtime
 
 
 def rows(path):
@@ -158,6 +160,8 @@ def validate_trial(trial):
         require(gpu_load.read_config(trial["gpu_config_path"]) == gpu["config"] and gpu["config"]["profile_id"] == trial["profile_id"], "GPU control/profile mismatch")
         require(row.get("gpu_idle_preflight_passed", "").lower() in {"true", "1"}, "GPU was not idle before adding owned experimental load")
         result.update(gpu_load.validate_record(record, row))
+        result.update(cpu_runtime.validate_resource_labels(row, details))
+        result["process_resource_labels_validated"] = True
     return result
 
 
@@ -253,6 +257,8 @@ def validate(manifest_path):
         "validated_configurations": len(collected), "expected_configurations": manifest.get("expected_configurations", len(manifest["trials"])),
         "cpu_four_levels_validated": complete_families["cpu"], "memory_four_levels_validated": complete_families["memory"],
         "gpu_four_levels_validated": complete_families["gpu"],
+        "process_resource_label_configurations": sum(item.get("process_resource_labels_validated") is True for item in collected),
+        "process_resource_targets": list(cpu_runtime.RESOURCE_TARGETS) if any(item.get("process_resource_labels_validated") for item in collected) else [],
         "temperature_policies": sorted({item["temperature_policy"] for item in collected}),
         "collection_protocols": sorted({item["collection_protocol"] for item in collected}),
         "complete_three_phase_configurations": sum(item["during_monitoring_status"] == "PASS" for item in collected),

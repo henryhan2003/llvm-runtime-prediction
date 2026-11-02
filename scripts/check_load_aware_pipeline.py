@@ -1,4 +1,4 @@
-"""Run no-pressure regression tests and audit unchanged static logic/CSV declarations."""
+"""Run no-pressure tests and audit static logic plus explicit CSV schema additions."""
 from __future__ import annotations
 
 import argparse
@@ -10,6 +10,19 @@ import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def csv_declaration_check(filename, label, before, after):
+    unchanged = after is not None and ast.dump(before) == ast.dump(after)
+    extension = False
+    if (not unchanged and filename == "pipeline_rodinia_cuda.py" and label == "SUMMARY_FIELDS"
+            and isinstance(before, ast.List) and isinstance(after, ast.List)):
+        added = ast.parse("[*base.cpu_runtime.SUMMARY_FIELDS]", mode="eval").body.elts[0]
+        retained = [node for node in after.elts if ast.dump(node) != ast.dump(added)]
+        extension = len(after.elts) - len(retained) == 1 and ast.dump(ast.List(elts=retained, ctx=ast.Load())) == ast.dump(before)
+    return {"file": filename, "definition": label, "unchanged": unchanged, "kind": "csv_declaration",
+            "approved_extension": "base.cpu_runtime.SUMMARY_FIELDS" if extension else None,
+            "original_fields_preserved": unchanged or extension}
 
 
 def source_preservation_audit():
@@ -31,13 +44,13 @@ def source_preservation_audit():
             if before is None or after is None:
                 continue
             def declarations(tree):
-                return {target.id: ast.dump(node.value) for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                return {target.id: node.value for node in ast.walk(tree) if isinstance(node, ast.Assign)
                         for target in node.targets if isinstance(target, ast.Name) and
                         (target.id.endswith("_FIELDS") or target.id in {"static_fields", "summary_fields", "run_fields", "results_fields"})}
             left, right = declarations(before), declarations(after)
             for label, definition in left.items():
-                findings.append({"file": name, "definition": label, "unchanged": right.get(label) == definition, "kind": "csv_declaration"})
-    return {"status": "PASS" if all(row["unchanged"] for row in findings) else "FAIL", "checks": findings}
+                findings.append(csv_declaration_check(name, label, definition, right.get(label)))
+    return {"status": "PASS" if all(row["unchanged"] or row.get("approved_extension") for row in findings) else "FAIL", "checks": findings}
 
 
 def main():
@@ -46,7 +59,7 @@ def main():
     args = parser.parse_args()
     suite = unittest.TestSuite()
     loader = unittest.TestLoader()
-    for pattern in ["test_pipeline*.py", "test_resource_load.py", "test_load_fast_protocol.py", "test_openmp_fast_protocol.py", "test_cuda_gpu_load.py"]:
+    for pattern in ["test_pipeline*.py", "test_cpu_runtime_parameters.py", "test_resource_load.py", "test_load_fast_protocol.py", "test_openmp_fast_protocol.py", "test_cuda_gpu_load.py"]:
         suite.addTests(loader.discover(str(ROOT / "tests"), pattern=pattern))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     preservation = source_preservation_audit()

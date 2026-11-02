@@ -245,6 +245,7 @@ class RunnerTests(Fixture):
             spawn.assert_not_called()
             self.assertEqual(count,len(manifest["trials"]))
             self.assertEqual(programs,manifest["preparation_cache"]["expected_unique_preparations"])
+            self.assertEqual(base.cpu_runtime.RESOURCE_TARGETS,manifest["process_resource_supervision"]["targets"])
             self.assertEqual(count,len({t["trial_id"] for t in manifest["trials"]}))
             for trial in manifest["trials"]:
                 config=host.read_config(trial["config_path"])
@@ -269,6 +270,10 @@ class RunnerTests(Fixture):
         with self.assertRaisesRegex(RuntimeError,"36-trial"):
             runner.batch_gate(args,{"gpu_uuid":"GPU-mock"})
         pilot["dataset"]="cuda";host.write_json(args.pilot_validation,pilot)
+        with self.assertRaisesRegex(RuntimeError,"five host-process"):
+            runner.batch_gate(args,{"gpu_uuid":"GPU-mock"})
+        pilot.update(process_resource_label_configurations=36,process_resource_targets=base.cpu_runtime.RESOURCE_TARGETS)
+        host.write_json(args.pilot_validation,pilot)
         runner.batch_gate(args,{"gpu_uuid":"GPU-mock"})
         with self.assertRaisesRegex(RuntimeError,"GPU/host"):
             runner.batch_gate(args,{"gpu_uuid":"GPU-other"})
@@ -387,6 +392,18 @@ class ValidatorTests(Fixture):
         row=checker.rows(path)[0]
         row.update(parallel_model="CUDA",host_cpu_usage_pct_before_mean=0,gpu_idle_preflight_passed=True,gpu_three_phase_collection_success=True,
                    **gpu_row,**payload["static_features"])
+        details=checker.rows(record["outputs"]["runs_file"])
+        for index,detail in enumerate(details):
+            detail.update({**base.cpu_runtime.empty_metrics(),"process_io_collection_status":"ok",
+                           "process_metrics_backend":"linux-process-probe-v4","process_cpu_user_sec":(index+1)*.1,
+                           "process_cpu_system_sec":0.,"process_max_rss_bytes":(index+1)*4096,
+                           **{field:index*10 for field in base.cpu_runtime.IO_NUMERIC_FIELDS}})
+        row.update(base.cpu_runtime.summarize([{**detail,"success":True} for detail in details]))
+        row.update(process_metrics_backend="linux-process-probe-v4",
+                   **{field:sum(detail[field] for detail in details)/len(details) for field in base.cpu_runtime.CPU_RESOURCE_FIELDS})
+        with Path(record["outputs"]["runs_file"]).open("w",encoding="utf-8",newline="") as stream:
+            import csv
+            writer=csv.DictWriter(stream,fieldnames=list(details[0]));writer.writeheader();writer.writerows(details)
         with path.open("w",encoding="utf-8",newline="") as stream:
             import csv
             writer=csv.DictWriter(stream,fieldnames=list(row));writer.writeheader();writer.writerow(row)
@@ -399,6 +416,8 @@ class ValidatorTests(Fixture):
         self.assertEqual("GPU-mock",result["gpu_uuid"])
         self.assertEqual("rodinia_cuda_v1",result["preparation_cache_kind"])
         self.assertEqual(25,result["gpu_before_mean_pct"])
+        self.assertTrue(result["process_resource_labels_validated"])
+        self.assertEqual(5,result["process_io_rchar_bytes"])
         record["gpu_load"]["phase_samples"]["during"]=[]
         host.write_json(sidecar,record)
         with self.assertRaisesRegex(RuntimeError,"real observations"):
@@ -443,10 +462,53 @@ class ValidatorTests(Fixture):
         self.assertEqual(4,len(exported))
         self.assertEqual(4,len({r["sample_id"] for r in exported}))
         for raw,export in zip(rows,exported):self.assertEqual(raw,{k:export[k] for k in raw})
+        self.assertEqual(4,report["process_resource_label_configurations"])
+        self.assertEqual(base.cpu_runtime.RESOURCE_TARGETS,report["process_resource_targets"])
+
+    def test_validator_rejects_missing_io_column_despite_complete_gpu_monitoring(self):
+        trial,record,_=self.trial()
+        path=Path(record["outputs"]["summary_file"])
+        rows=checker.rows(path)
+        rows[0].pop("process_io_wchar_bytes")
+        import csv
+        with path.open("w",encoding="utf-8",newline="") as stream:
+            writer=csv.DictWriter(stream,fieldnames=list(rows[0]));writer.writeheader();writer.writerows(rows)
+        with self.assertRaisesRegex(ValueError,"process_io_wchar_bytes"):
+            checker.validate_trial(trial)
 
 
 class PipelineIntegrationTests(Fixture):
-    def test_cache_cap_and_environment_serialization_through_cuda_main(self):
+    def short_host_monitoring(self):
+        record={"config":{"collection_protocol":"fast-v2","min_raw_scrapes":3},
+                "monitoring_preflight":{"scrape_interval_seconds":1.},
+                "phase_windows":{"during":(17.,20.)},
+                "phase_quality":{"before":{"status":"PASS"},"during":{"status":"MISSING_SHORT_WINDOW"},
+                                 "after":{"status":"PASS"}}}
+        row={"prometheus_before_collection_success":True,"prometheus_after_collection_success":True,
+             "prometheus_during_collection_success":False,"prometheus_three_phase_collection_success":False,
+             "prometheus_three_phase_collection_error":"during: insufficient raw scrapes"}
+        return record,row
+
+    def test_host_monitoring_exception_requires_unique_recorded_short_window(self):
+        record,row=self.short_host_monitoring()
+        session=types.SimpleNamespace(identity={"program_id":"toy","input_id":"SIZE_01"},record=record)
+        args=types.SimpleNamespace(load_config=Path("mock.json"),_load_sessions=[session])
+        self.assertTrue(cuda.host_monitoring_accepted(args,"toy","SIZE_01",row))
+        for change in ["strict","long","before","after","during","fabricated","identity","ambiguous","unrecorded","legacy"]:
+            modified=deepcopy(args);observed=deepcopy(row)
+            r=modified._load_sessions[0].record
+            if change=="strict":r["config"]["collection_protocol"]="strict-v1"
+            if change=="long":r["phase_windows"]["during"]=(17.,23.)
+            if change in {"before","after","during"}:r["phase_quality"][change]["status"]="FAIL"
+            if change=="fabricated":observed["host_cpu_usage_pct_during_mean"]=0
+            if change=="identity":modified._load_sessions[0].identity["input_id"]="SIZE_02"
+            if change=="ambiguous":modified._load_sessions*=2
+            if change=="unrecorded":modified._load_sessions=[]
+            if change=="legacy":modified.load_config=None
+            with self.subTest(change=change):
+                self.assertFalse(cuda.host_monitoring_accepted(modified,"toy","SIZE_01",observed))
+
+    def run_cached_cuda_main(self,host_result=None,load_record=None,gpu_success=True,io_complete=True):
         root=self.root/"rodinia";work=root/"cuda/toy";work.mkdir(parents=True)
         (work/"toy.cu").write_text("// MOCK benchmark\n")
         inputs=tuple(base.InputSpec(f"SIZE_{i:02d}",f"SIZE_{i:02d}",(str(i),),1,{"N":i},(),{}) for i in [1,2])
@@ -466,7 +528,23 @@ class PipelineIntegrationTests(Fixture):
             self.assertEqual(20,args[12]);self.assertEqual("MOCK_SHA",args[13])
             self.assertIs(cache.verify_execution_file,args[14])
             args[9].update(before=(10,16),during=(17,23),after=(23,29))
-            return {"run_success":True,"runtime_sec_median":int(args[2].parameters["N"])},[],[]
+            details=[]
+            for index,phase in enumerate(["warmup","measure","measure"]):
+                detail={**base.cpu_runtime.empty_metrics(),"program_id":"toy","input_id":args[2].input_id,
+                        "run_id":args[2].input_id+str(index),"phase":phase,"success":True,
+                        "process_metrics_backend":"linux-process-probe-v4","process_cpu_user_sec":.1,
+                        "process_cpu_system_sec":0.,"process_max_rss_bytes":4096,"process_io_collection_status":"ok"}
+                detail.update({field:(999 if phase=="warmup" else index*10) for field in base.cpu_runtime.IO_NUMERIC_FIELDS})
+                if not io_complete and index==2:
+                    detail.update(base.cpu_runtime.empty_metrics("permission_denied"))
+                details.append(detail)
+            summary={"run_success":True,"measured_runs":2,"runtime_sec_median":int(args[2].parameters["N"]),
+                     "process_metrics_backend":"linux-process-probe-v4","process_cpu_user_sec":.1,
+                     "process_cpu_system_sec":0.,"process_max_rss_bytes":4096,**base.cpu_runtime.summarize(details)}
+            return summary,details,[]
+        def load_session(args,core,identity,*unused):
+            args._load_sessions.append(types.SimpleNamespace(identity=identity,record=deepcopy(load_record)))
+            return nullcontext(None)
         with ExitStack() as stack:
             stack.enter_context(mock.patch.object(cuda,"os",types.SimpleNamespace(name="posix",environ=dict(os.environ))))
             stack.enter_context(mock.patch.object(cuda.base,"load_manifest",return_value=[spec]))
@@ -485,10 +563,75 @@ class PipelineIntegrationTests(Fixture):
             measured=stack.enter_context(mock.patch.object(cuda.base,"measure_input",side_effect=measure))
             rebuilt=stack.enter_context(mock.patch.object(cuda,"build_benchmark"))
             extracted=stack.enter_context(mock.patch.object(cuda,"collect_static_features"))
-            code=cuda.main(["--benchmark","toy","--input-profile","all","--rodinia-root",str(root),"--collect-static",
-                           "--results-dir",str(self.root/"out"),"--preparation-cache-dir",str(self.root/"cache"),"--max-measured-runs","20","--prometheus-exporter","off"])
-        self.assertEqual(0,code)
+            argv=["--benchmark","toy","--input-profile","all","--rodinia-root",str(root),"--collect-static",
+                  "--results-dir",str(self.root/"out"),"--preparation-cache-dir",str(self.root/"cache"),"--max-measured-runs","20",
+                  "--prometheus-exporter","node" if host_result is not None else "off"]
+            if host_result is not None:
+                argv.extend(["--prometheus-job","node","--prometheus-instance","127.0.0.1:9100"])
+                stack.enter_context(mock.patch.object(cuda.base.pipeline_core(),"collect_prometheus_three_phase_metrics",return_value=host_result))
+                stack.enter_context(mock.patch.object(cuda.base.resource_load,"phase_guard",return_value=None))
+                stack.enter_context(mock.patch.object(cuda.time,"sleep"))
+            if load_record is not None:
+                argv.extend(["--load-config",str(self.config(collection_protocol="fast-v2",minimum_measured_runs=2,maximum_measured_runs=20)),
+                             "--min-measured-runs","2","--gpu-load-config",str(self.gpu_config())])
+                stack.enter_context(mock.patch.object(cuda.gpu_resource_load,"session",side_effect=load_session))
+                stack.enter_context(mock.patch.object(cuda.base.resource_load,"finalize"))
+            if not gpu_success:
+                stack.enter_context(mock.patch.object(cuda,"summarize_gpu_samples",return_value={"gpu_three_phase_collection_success":False,
+                    "gpu_three_phase_collection_error":"during: no GPU observations"}))
+            code=cuda.main(argv)
         prepared.assert_called_once();self.assertEqual(2,measured.call_count)
         rebuilt.assert_not_called();extracted.assert_not_called()
         environment=json.loads(next((self.root/"out").glob("*environment*.json")).read_text())
         self.assertFalse(any(k.startswith("_") for k in environment["arguments"]))
+        self.assertEqual(base.cpu_runtime.schema_description(),environment["cpu_runtime_parameter_schema"])
+        for row in checker.rows(next((self.root/"out").glob("*summary*.csv"))):
+            self.assertTrue(set(base.cpu_runtime.SUMMARY_FIELDS).issubset(row))
+            self.assertEqual("15.0" if io_complete else "",row["process_io_rchar_bytes"])
+            self.assertEqual("ok" if io_complete else "partial",row["process_io_collection_status"])
+        self.assertTrue(all("process_io_wchar_bytes" in r for r in checker.rows(next((self.root/"out").glob("*runs*.csv")))))
+        return code
+
+    def test_cache_cap_and_environment_serialization_through_cuda_main(self):
+        self.assertEqual(0,self.run_cached_cuda_main())
+
+    def test_cuda_main_accepts_recorded_fast_host_short_window(self):
+        record,row=self.short_host_monitoring()
+        self.assertEqual(0,self.run_cached_cuda_main(row,record))
+
+    def test_cuda_main_still_rejects_missing_gpu_during_samples(self):
+        record,row=self.short_host_monitoring()
+        self.assertEqual(1,self.run_cached_cuda_main(row,record,gpu_success=False))
+
+    def test_cuda_main_without_load_record_still_rejects_incomplete_host_monitoring(self):
+        _,row=self.short_host_monitoring()
+        self.assertEqual(1,self.run_cached_cuda_main(row))
+
+    def test_missing_io_fails_controlled_cuda_even_when_execution_and_gpu_succeed(self):
+        record,row=self.short_host_monitoring()
+        self.assertEqual(1,self.run_cached_cuda_main(row,record,io_complete=False))
+
+    def test_not_run_cuda_has_same_missing_io_semantics_as_cpu_pipelines(self):
+        empty=cuda._not_run_metrics(6,.5)
+        for field in base.cpu_runtime.IO_NUMERIC_FIELDS:
+            self.assertEqual("",empty[field])
+        self.assertEqual("not_run",empty["process_io_collection_status"])
+        self.assertEqual(0,empty["process_io_sampled_runs"])
+
+
+class PreservationAuditTests(Fixture):
+    def test_only_explicit_cuda_io_summary_addition_is_allowed(self):
+        import ast
+        import check_load_aware_pipeline as audit
+        expression=lambda code:ast.parse(code,mode="eval").body
+        old=expression("['runtime', *base.PROCESS_FIELDS, 'end']")
+        new=expression("['runtime', *base.PROCESS_FIELDS, *base.cpu_runtime.SUMMARY_FIELDS, 'end']")
+        result=audit.csv_declaration_check("pipeline_rodinia_cuda.py","SUMMARY_FIELDS",old,new)
+        self.assertFalse(result["unchanged"])
+        self.assertTrue(result["original_fields_preserved"])
+        self.assertEqual("base.cpu_runtime.SUMMARY_FIELDS",result["approved_extension"])
+        for filename,label,candidate in [("pipeline_rodinia.py","SUMMARY_FIELDS",new),
+                                         ("pipeline_rodinia_cuda.py","GPU_RESULT_FIELDS",new),
+                                         ("pipeline_rodinia_cuda.py","SUMMARY_FIELDS",expression("['changed', *base.PROCESS_FIELDS, *base.cpu_runtime.SUMMARY_FIELDS, 'end']"))]:
+            with self.subTest(filename=filename,label=label):
+                self.assertFalse(audit.csv_declaration_check(filename,label,old,candidate)["original_fields_preserved"])
