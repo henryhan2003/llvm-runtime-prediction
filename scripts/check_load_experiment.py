@@ -35,10 +35,12 @@ def require(condition, message):
 def validate_trial(trial):
     require(trial["status"] == "COMPLETED", "Trial was not completed")
     require(hashlib.sha256(Path(trial["config_path"]).read_bytes()).hexdigest() == trial["config_sha256"], "Load configuration changed")
-    sidecars = [json.loads(p.read_text(encoding="utf-8")) for p in (Path(trial["results_dir"]) / "load_records").glob("*.json")
-                if not p.name.endswith(".ready.json")]
-    require(len(sidecars) == 1, "Expected exactly one load sidecar per isolated configuration")
-    record = sidecars[0]
+    # Worker readiness files describe startup, not a second experimental sample.
+    sidecars = sorted(p for p in (Path(trial["results_dir"]) / "load_records").glob("*.json")
+                      if not p.name.endswith((".ready.json", ".gpu-ready.json")))
+    require(len(sidecars) == 1, "Expected exactly one load sidecar per isolated configuration; "
+            f"found {len(sidecars)}: {', '.join(p.name for p in sidecars)}")
+    record = json.loads(sidecars[0].read_text(encoding="utf-8"))
     # Sidecars collected before the explicit policy option used the abort behavior.
     config = {**load.DEFAULTS, **record["config"]}
     require(config == load.read_config(trial["config_path"]), "Sidecar control configuration mismatch")

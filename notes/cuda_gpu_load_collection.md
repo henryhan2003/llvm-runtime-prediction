@@ -15,7 +15,7 @@ four GPU profiles: 36 samples. Full collection covers all 22 currently enabled
 benchmarks, twenty sizes each and four GPU profiles: 1,760 samples. Existing
 smoke/official inputs and disabled benchmarks are not silently substituted.
 
-Local Windows regression: 204 tests ran, 199 passed and five Linux-native
+Local Windows regression: 208 tests ran, 203 passed and five Linux-native
 probe/collector tests were skipped. Static extraction functions are unchanged;
 original CSV fields are preserved, with only the explicit shared CUDA I/O summary
 extension authorized by the preservation audit. Native nvcc compilation and real GPU calibration
@@ -41,6 +41,27 @@ monitoring_acceptance and error to distinguish this bug from a real failure.
 After synchronizing this fix, create a fresh pilot directory and retain the old
 failed pilot as evidence. Resume deliberately rejects changed code fingerprints;
 do not edit the old manifest or hashes to bypass that protection.
+
+## Worker readiness JSON versus sample records
+
+Each isolated trial has exactly one primary load sidecar, for example UUID.json.
+Non-idle GPU trials additionally create UUID.gpu-ready.json for worker startup;
+the host-memory worker uses UUID.ready.json. These two exact auxiliary suffixes
+are excluded before counting primary sample records. Previously only .ready.json
+was excluded, so the first GPU_LOW trial could exit successfully but fail offline
+validation with "Expected exactly one load sidecar per isolated configuration".
+
+The validator now accepts the real directory layout without deleting or changing
+readiness files. Duplicate primary records, unknown extra JSON files and missing
+primary records still fail. GPU evidence and all five CPU/Memory/IO labels retain
+their existing validation. The four-level synthetic export test now includes GPU
+readiness files for LOW/MEDIUM/HIGH, not for IDLE. File hashes are checked in the
+new regression test to ensure validation changes no collected observations.
+
+This is a validator-only fix, not a runtime or load-control change. Synchronize
+check_load_experiment.py and its tests, retain the failed pilot, and start a fresh
+pilot directory because the recorded checker source hash has changed. Do not
+delete readiness files or edit source fingerprints to force the old run to resume.
 
 ## Host CPU, memory and I/O label alignment
 

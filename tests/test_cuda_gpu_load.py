@@ -408,6 +408,8 @@ class ValidatorTests(Fixture):
             import csv
             writer=csv.DictWriter(stream,fieldnames=list(row));writer.writeheader();writer.writerow(row)
         host.write_json(sidecar,record)
+        host.write_json(sidecar.with_suffix(".gpu-ready.json"),{"pid":765432,"buffer_bytes":1024,
+            "blocks":8,"threads":256,"iterations":4096,"calibration_kernel_ms":1.})
         return trial,record,sidecar
 
     def test_full_trial_validator_accepts_cuda_boolean_source_fields_and_gpu_evidence(self):
@@ -421,6 +423,37 @@ class ValidatorTests(Fixture):
         record["gpu_load"]["phase_samples"]["during"]=[]
         host.write_json(sidecar,record)
         with self.assertRaisesRegex(RuntimeError,"real observations"):
+            checker.validate_trial(trial)
+
+    def test_worker_readiness_files_are_not_load_records_and_remain_unchanged(self):
+        trial,record,sidecar=self.trial()
+        host.write_json(sidecar.with_suffix(".ready.json"),{"pid":765433,"allocated_bytes":4096})
+        paths=[sidecar,*sidecar.parent.glob("*ready.json"),Path(record["outputs"]["summary_file"]),
+               Path(record["outputs"]["runs_file"])]
+        before={str(p):gpu.digest(p) for p in paths}
+        self.assertEqual(3,len(list(sidecar.parent.glob("*.json"))))
+        validated=checker.validate_trial(trial)
+        self.assertTrue(validated["process_resource_labels_validated"])
+        self.assertEqual(25,validated["gpu_before_mean_pct"])
+        self.assertEqual(before,{str(p):gpu.digest(p) for p in paths})
+
+    def test_duplicate_primary_load_record_is_still_rejected(self):
+        trial,_,sidecar=self.trial()
+        duplicate=sidecar.with_name("second_load_record.json")
+        duplicate.write_bytes(sidecar.read_bytes())
+        with self.assertRaisesRegex(ValueError,"Expected exactly one load sidecar"):
+            checker.validate_trial(trial)
+
+    def test_unknown_json_is_not_silently_ignored_as_a_readiness_file(self):
+        trial,_,sidecar=self.trial()
+        host.write_json(sidecar.with_name("unexpected.json"),{"pid":765434})
+        with self.assertRaisesRegex(ValueError,"Expected exactly one load sidecar"):
+            checker.validate_trial(trial)
+
+    def test_readiness_without_a_primary_record_is_not_a_valid_trial(self):
+        trial,_,sidecar=self.trial()
+        sidecar.unlink()
+        with self.assertRaisesRegex(ValueError,"Expected exactly one load sidecar"):
             checker.validate_trial(trial)
 
     def test_gpu_quartet_full_report_exports_lossless_total_table(self):
@@ -449,6 +482,8 @@ class ValidatorTests(Fixture):
             runs.write_bytes(Path(record["outputs"]["runs_file"]).read_bytes())
             r["outputs"].update(summary_file=str(summary),runs_file=str(runs))
             host.write_json(results/"load_records/fixture.json",r)
+            if profile["target_gpu_pct"]:
+                host.write_json(results/"load_records/fixture.gpu-ready.json",{"pid":765432,"buffer_bytes":1024})
             trials.append(t);rows.append(checker.rows(summary)[0])
         path=self.root/"manifest.json"
         host.write_json(path,{"dataset":"cuda","stage":"batch","status":"VALIDATING","gpu_uuid":"GPU-mock","load_families":["gpu"],
